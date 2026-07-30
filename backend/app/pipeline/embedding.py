@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gc
-import hashlib
 from pathlib import Path
 from typing import Protocol
 
@@ -19,29 +18,8 @@ class EmbeddingProvider(Protocol):
         ...
 
 
-class MockDinoProvider:
-    """A deterministic 1024-dim image descriptor for UI and algorithm demos."""
-
-    dimension = 1024
-
-    def embed(self, path: Path, prepared_path: Path | None = None) -> np.ndarray:
-        with Image.open(path) as image:
-            image = image.convert("L").resize((32, 32), Image.Resampling.LANCZOS)
-            pixels = np.asarray(image, dtype=np.float32) / 255.0
-        vector = pixels.reshape(-1)
-        vector -= vector.mean()
-        norm = np.linalg.norm(vector)
-        if norm == 0:
-            vector = np.ones(self.dimension, dtype=np.float32)
-            norm = np.linalg.norm(vector)
-        return (vector / norm).astype(np.float32)
-
-    def close(self) -> None:
-        return None
-
-
 class DINOv3Provider:
-    """DINOv3 ViT-L/16 provider; heavy imports are delayed until real mode is used."""
+    """DINOv3 ViT-L/16 provider; heavy imports are delayed until it is used."""
 
     dimension = 1024
 
@@ -50,7 +28,7 @@ class DINOv3Provider:
             import torch
             from transformers import AutoImageProcessor, AutoModel
         except ImportError as exc:  # pragma: no cover - depends on optional extra
-            raise RuntimeError("real mode requires `uv sync --extra models`") from exc
+            raise RuntimeError("DINOv3 requires `uv sync --extra models`") from exc
 
         self.torch = torch
         self.processor = AutoImageProcessor.from_pretrained(model_id)
@@ -103,32 +81,6 @@ class DINOv3Provider:
         if self.device == "cuda":
             gc.collect()
             self.torch.cuda.empty_cache()
-
-
-class MockPixAIEmbeddingProvider:
-    """A lightweight color-aware stand-in for PixAI's 1024-dim image embedding."""
-
-    dimension = 1024
-
-    def embed(self, path: Path, prepared_path: Path | None = None) -> np.ndarray:
-        with Image.open(path) as image:
-            rgb = np.asarray(
-                image.convert("RGB").resize((16, 16), Image.Resampling.LANCZOS),
-                dtype=np.float32,
-            )
-            gray = np.asarray(
-                image.convert("L").resize((16, 16), Image.Resampling.LANCZOS),
-                dtype=np.float32,
-            )
-        vector = np.concatenate((rgb.reshape(-1), gray.reshape(-1))) / 255.0
-        norm = np.linalg.norm(vector)
-        if norm == 0:
-            vector = np.ones(self.dimension, dtype=np.float32)
-            norm = np.linalg.norm(vector)
-        return (vector / norm).astype(np.float32)
-
-    def close(self) -> None:
-        return None
 
 
 class PixAIEmbeddingProvider:
@@ -219,17 +171,9 @@ def _save_preprocessed_image(
     Image.fromarray(pixels).save(destination, format="PNG")
 
 
-def make_embedding_provider(mode: str, model_id: str) -> EmbeddingProvider:
-    if mode == "real":
-        return DINOv3Provider(model_id)
-    return MockDinoProvider()
+def make_embedding_provider(model_id: str) -> EmbeddingProvider:
+    return DINOv3Provider(model_id)
 
 
-def make_pixai_embedding_provider(mode: str, model_name: str) -> EmbeddingProvider:
-    if mode == "real":
-        return PixAIEmbeddingProvider(model_name)
-    return MockPixAIEmbeddingProvider()
-
-
-def deterministic_seed(path: Path) -> int:
-    return int(hashlib.sha256(str(path).encode()).hexdigest()[:8], 16)
+def make_pixai_embedding_provider(model_name: str) -> EmbeddingProvider:
+    return PixAIEmbeddingProvider(model_name)

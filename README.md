@@ -2,7 +2,7 @@
 
 一个本地优先、前后端分离的图片数据集筛选与 LoRA Caption 生成工具。它把图片去重、质量门槛、视觉聚类、连通性筛选、缺陷检测、人工复核、PixAI 标签清洗和数据集输出串成一条可观察、可审计的流水线。
 
-默认使用 `mock` 模式，无需下载大模型即可体验完整界面和流程；切换到 `real` 模式后可使用 DINOv3、Locate Anything 和 PixAI Tagger 的真实推理结果。
+项目固定使用真实本地模型，不提供演示模式或运行模式切换。DINOv3、Locate Anything 和 PixAI Tagger 都会执行真实推理。
 
 ## 核心能力
 
@@ -18,23 +18,29 @@
 ### Windows 一键启动
 
 1. 安装 Windows 10/11，并确保可以访问 Python 与模型下载源。
-2. 复制 `.env.example` 为 `.env`；初次体验可保留默认的 `APP_MODE=mock`。
+2. 检查仓库根目录中的 `.env`；首次运行前需按需设置 `HF_TOKEN`。
 3. 双击 `start_services.bat`。
 4. 浏览器会自动打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)。
 
-启动脚本会检查并安装 `uv`、Python 3.11 和项目依赖，健康的既有服务会直接复用。结束使用时双击 `stop_services.bat`；脚本会在确认进程属于本项目后停止 5173、8000 和 9000 端口上的服务。
+启动脚本会检查并安装 `uv`、Python 3.11、模型依赖和模型文件，然后依次启动 Locate Anything、后端与前端。健康的既有服务会直接复用。结束使用时双击 `stop_services.bat`；脚本会在确认进程属于本项目后停止 5173、8000 和 9000 端口上的服务。
 
 ### 手动启动
 
 需要 Python 3.11 与 [uv](https://docs.astral.sh/uv/)。
 
 ```powershell
-Copy-Item .env.example .env
-uv sync
+uv sync --extra models
+uv run python scripts/bootstrap_models.py
+uv run python scripts/locate_anything_server.py --host 127.0.0.1 --port 9000
+```
+
+另开一个终端启动后端：
+
+```powershell
 uv run uvicorn app.main:app --app-dir backend --reload --port 8000
 ```
 
-另开一个终端启动前端：
+再开一个终端启动前端：
 
 ```powershell
 uv run python frontend/server.py
@@ -59,8 +65,6 @@ uv run python frontend/server.py
 11. `pixai-labs/pixai-tagger-v0.9` 对 Review 通过图片推理一次，保存 general tags，并派生人数、取景和室外状态。
 12. 用户设置三组边际目标与最终数量，系统贪心填补分布缺口。
 13. 仅为最终选中图片清洗标签、注入 LoRA Prefix，并输出图片与 UTF-8 `.txt` caption。
-
-默认 `APP_MODE=mock`，便于先预览编排和 UI。mock 模式不需要下载大模型，但会生成 1024 维确定性演示 embedding，并依据文件名中的 `watermark`、`comic`、`collage`、`bad` 等标记演示 Locate Anything 失败分支。
 
 Locate 阶段提供类似 ComfyUI 的实时节点画布：显示当前 medoid 或备用候选、两类模型请求状态、返回框叠加、最终判定与一次重试分支。预览图使用模型实际检查的处理图压缩生成，检测框与画面保持对齐。
 
@@ -94,40 +98,31 @@ uv run python backend/scripts/generate_pixai_parent_rules.py
 
 首轮合并器要求全部 9,740 个标签精确覆盖且范围不重叠；二审合并器要求每条首轮关系都有且只有一个 `accept`、`reject` 或 `ambiguous` 结论。审查摘要、二审报告、候选项和 proposed overrides 会在本地 resources 目录生成，但默认不纳入 Git；仓库只保留运行时规则与人工 overrides。二审合并器以 GPT 二审为权威输入，不会让旧 `add` 重新引入被拒绝、存疑或未经审查的关系；当前将 5,320 条接受关系传递约简为 4,705 条直接边，移除了 615 条冗余边。生成器会自动发现本机 `deepghs/pixai-tagger-v0.9-onnx` 模型快照中的 `selected_tags.csv`，读取 `pixai_parent_overrides.json`，稳定生成生产规则、审计报告和待检查候选。名称结构分析和未经确认的 active implication 只写入 `pixai_parent_review_candidates.json`，不会自动进入运行时。若已有明确带 `status=active` 的 Danbooru JSON 数组快照，可通过 `--aliases` 和 `--implications` 传入；非 active、缺失状态或无效关系会被忽略。发现未知标签、alias 归一化自环、父子环、被直接阻止的父子边或未约简的 schema v2 关系时会直接失败。
 
-## 真实模型
+## 模型与环境配置
 
-首次使用 real 模式前，需要在 Hugging Face 同意 DINOv3 模型条款，并在 `.env` 中设置 `HF_TOKEN`。模型文件较大，请预留足够的磁盘空间和下载时间。
+首次使用前，需要在 Hugging Face 同意 DINOv3 模型条款。模型文件较大，请预留足够的磁盘空间和下载时间。
 
-安装可选模型依赖：
-
-```powershell
-uv sync --extra models
-```
-
-然后设置：
+项目根目录的 `.env` 是固定保留的本地运行配置。仓库中的 `HF_TOKEN` 保持为空；如需令牌，建议在启动终端中临时设置，避免把密钥提交到公开仓库：
 
 ```powershell
-$env:APP_MODE="real"
-$env:DINO_MODEL_ID="facebook/dinov3-vitl16-pretrain-lvd1689m"
-$env:LOCATE_ANYTHING_MODEL_ID="sahilchachra/LocateAnything-3B-AWQ-W4A16"
-$env:LOCATE_ANYTHING_ENDPOINT="http://127.0.0.1:9000/v1/chat/completions"
-$env:LOCATE_ANYTHING_MAX_TOKENS="1024"
-$env:PIXAI_MODEL_ID="pixai-labs/pixai-tagger-v0.9"
-$env:PIXAI_RUNTIME_MODEL_ID="deepghs/pixai-tagger-v0.9-onnx"
-$env:PIXAI_STORAGE_THRESHOLD="0.10"
-$env:PIXAI_FEATURE_THRESHOLD="0.35"
-$env:PIXAI_CAPTION_THRESHOLD="0.50"
-$env:PIXAI_CAPTION_MAX_TAGS="48"
-$env:PIXAI_CAPTION_HARD_MAX_TAGS="64"
-$env:PIXAI_CAPTION_EXCLUSIVE_MARGIN="0.15"
-$env:PIXAI_CAPTION_PAIR_MARGIN="0.15"
-$env:PIXAI_CAPTION_ABSTRACT_THRESHOLD="0.65"
-$env:PIXAI_CAPTION_REMOVE_ALL_TEXT_TAGS="false"
-$env:PIXAI_PARENT_RULES_PATH=""
-$env:PIXAI_PARENT_RULES_STRICT="false"
+$env:HF_TOKEN="<your-token>"
 ```
 
-DINOv3 适配器使用 Hugging Face `AutoImageProcessor` 与 `AutoModel`，会校验输出为 1024 维并进行 L2 归一化。PixAI 实验模式直接读取 `pixai-labs/pixai-tagger-v0.9` ONNX 模型自身的 `embedding` 输出，同样校验 1024 维并归一化；它不是把预测标签拼接成向量。PixAI 官方预处理本身就是双线性缩放到 448×448 后归一化。真实模式下，两种视觉基模现在都会把各自的 448×448 实际输入保存为任务级无损临时 PNG，Locate Anything 直接复用同一张图片；任务成功或失败后都会自动清理临时目录，最终清单和输出仍引用原图。Locate Anything 适配器默认使用可配置的 4bit AWQ W4A16 权重 `sahilchachra/LocateAnything-3B-AWQ-W4A16`；启动脚本会自动检查并下载它。生成上限默认限制为 1024 tokens，以降低长时间生成和 CUDA OOM 风险。若要换成其他量化格式，修改 `LOCATE_ANYTHING_MODEL_ID` 即可。
+常用配置：
+
+```dotenv
+DINO_MODEL_ID=facebook/dinov3-vitl16-pretrain-lvd1689m
+LOCATE_ANYTHING_MODEL_ID=sahilchachra/LocateAnything-3B-AWQ-W4A16
+LOCATE_ANYTHING_ENDPOINT=http://127.0.0.1:9000/v1/chat/completions
+LOCATE_ANYTHING_MAX_TOKENS=1024
+PIXAI_MODEL_ID=pixai-labs/pixai-tagger-v0.9
+PIXAI_RUNTIME_MODEL_ID=deepghs/pixai-tagger-v0.9-onnx
+PIXAI_CAPTION_THRESHOLD=0.50
+PIXAI_CAPTION_MAX_TAGS=48
+PIXAI_CAPTION_HARD_MAX_TAGS=64
+```
+
+DINOv3 适配器使用 Hugging Face `AutoImageProcessor` 与 `AutoModel`，会校验输出为 1024 维并进行 L2 归一化。PixAI Embedding 直接读取 `pixai-labs/pixai-tagger-v0.9` ONNX 模型自身的 `embedding` 输出，同样校验 1024 维并归一化；它不是把预测标签拼接成向量。PixAI 官方预处理本身就是双线性缩放到 448×448 后归一化。两种视觉基模都会把各自的 448×448 实际输入保存为任务级无损临时 PNG，Locate Anything 直接复用同一张图片；任务成功或失败后都会自动清理临时目录，最终清单和输出仍引用原图。Locate Anything 适配器默认使用可配置的 4bit AWQ W4A16 权重 `sahilchachra/LocateAnything-3B-AWQ-W4A16`；启动脚本会自动检查并下载它。生成上限默认限制为 1024 tokens，以降低长时间生成和 CUDA OOM 风险。若要换成其他量化格式，修改 `LOCATE_ANYTHING_MODEL_ID` 即可。
 
 Locate Anything 适配器默认调用 OpenAI-compatible `/v1/chat/completions`，发送 data URL 图片和 prompt，并解析官方 `<box><x1><y1><x2><y2></box>` 输出；同时兼容自定义服务返回的 `boxes`、`results[].box`、`detections[].bbox`。服务返回坐标不参与通过/不通过判断，只判断 box 数量。
 
@@ -149,13 +144,13 @@ auto_cat/
 ├─ frontend/                # 无构建步骤的 HTML/CSS/JavaScript 前端
 ├─ scripts/                 # 模型准备、Locate Anything 服务与停止脚本
 ├─ tests/                   # 核心算法和 PixAI 规则回归测试
-├─ .env.example             # 可提交的环境变量模板
+├─ .env                     # 本地运行配置（随项目保留）
 ├─ pyproject.toml           # Python 依赖与工具配置
 ├─ start_services.bat       # Windows 一键启动
 └─ stop_services.bat        # Windows 一键停止
 ```
 
-`test_image/`、运行日志、缓存、模型下载和生成的数据集都属于本地实验产物，已在 `.gitignore` 中排除。`tests/` 中的自动化回归测试会保留在仓库中。
+`test_image/`、运行日志、缓存、模型下载和生成的数据集都属于本地实验产物，已在 `.gitignore` 中排除。`.env` 和 `tests/` 中的自动化回归测试会保留在仓库中。
 
 ## 开发与验证
 
@@ -170,8 +165,8 @@ uv run ruff check .
 
 ## API
 
-- `POST /api/jobs` 创建任务，JSON：`{"source_dir":"...","output_dir":"...","mode":"mock","similarity_model":"dinov3|pixai"}`
-- `POST /api/pixai/jobs` 跳过视觉筛选并直接创建 PixAI 任务，JSON：`{"source_dir":"...","output_dir":"...","mode":"mock","lora_prefix":"artist_style"}`
+- `POST /api/jobs` 创建任务，JSON：`{"source_dir":"...","output_dir":"...","similarity_model":"dinov3|pixai"}`
+- `POST /api/pixai/jobs` 跳过视觉筛选并直接创建 PixAI 任务，JSON：`{"source_dir":"...","output_dir":"...","lora_prefix":"artist_style"}`
 - `GET /api/folders/select?purpose=source|output` 弹出本机文件夹选择窗口
 - `GET /api/jobs` 查看任务列表
 - `GET /api/jobs/{job_id}` 查看任务状态和统计

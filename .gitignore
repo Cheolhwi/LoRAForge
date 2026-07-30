@@ -14,10 +14,8 @@ build/
 dist/
 *.egg-info/
 
-# Local configuration and credentials
-.env
+# Machine-specific environment variants
 .env.*
-!.env.example
 
 # Runtime state and diagnostics
 .auto-cat-tmp/

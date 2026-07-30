@@ -24,7 +24,7 @@
               <span class="kicker">01 / INPUT</span>
               <h2>创建一次筛选任务</h2>
             </div>
-            <span class="mode-note">默认 Real，使用本地模型服务</span>
+            <span class="mode-note">固定使用本地真实模型</span>
           </div>
           <form id="job-form" class="job-form">
             <label class="folder-field">
@@ -41,13 +41,6 @@
                 <button type="button" class="folder-select-button" data-folder-purpose="output" data-folder-target="output-dir">选择文件夹</button>
                 <button id="clear-output-dir" type="button" class="folder-clear-button" disabled>清除</button>
               </div>
-            </label>
-            <label class="small-field">
-              <span>推理模式</span>
-              <select id="mode">
-                <option value="real" selected>Real 模型</option>
-                <option value="mock">Mock 演示</option>
-              </select>
             </label>
             <label class="small-field similarity-model-field">
               <span>视觉相似度模型</span>

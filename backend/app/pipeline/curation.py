@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from copy import deepcopy
 from pathlib import Path
@@ -341,44 +340,6 @@ def _caption_category(tag: str) -> str:
     return "other"
 
 
-class MockPixAITagger:
-    model_id = "pixai-labs/pixai-tagger-v0.9 (mock)"
-
-    def tag(self, image_path: Path) -> dict[str, float]:
-        seed = int(hashlib.sha256(str(image_path).encode("utf-8")).hexdigest()[:8], 16)
-        people_variants = [
-            {"1girl": 0.96, "solo": 0.93},
-            {"1boy": 0.92, "solo": 0.89},
-            {"2girls": 0.88, "duo": 0.78},
-            {"3girls": 0.84, "group": 0.74},
-        ]
-        framing_variants = [
-            {"full_body": 0.86},
-            {"cowboy_shot": 0.81},
-            {"upper_body": 0.83},
-            {"close-up": 0.78},
-        ]
-        setting_variants = [
-            {"outdoors": 0.88, "day": 0.76, "blue_sky": 0.65},
-            {"indoors": 0.82, "room": 0.71},
-            {"simple_background": 0.75},
-        ]
-        tags = {
-            "looking_at_viewer": 0.82,
-            "long_hair": 0.76,
-            "standing": 0.68,
-            "smile": 0.61,
-            "white_shirt": 0.57,
-        }
-        tags.update(people_variants[seed % len(people_variants)])
-        tags.update(framing_variants[(seed // 3) % len(framing_variants)])
-        tags.update(setting_variants[(seed // 7) % len(setting_variants)])
-        return dict(sorted(tags.items(), key=lambda item: (-item[1], item[0])))
-
-    def close(self) -> None:
-        return None
-
-
 class RealPixAITagger:
     def __init__(self, model_name: str, model_id: str, storage_threshold: float):
         try:
@@ -417,13 +378,10 @@ class RealPixAITagger:
 
 
 def make_pixai_tagger(
-    mode: str,
     model_name: str,
     model_id: str,
     storage_threshold: float,
 ):
-    if mode == "mock":
-        return MockPixAITagger()
     return RealPixAITagger(model_name, model_id, storage_threshold)
 
 

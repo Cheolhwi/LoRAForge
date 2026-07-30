@@ -26,7 +26,7 @@ p { color: var(--muted); margin: 0; }
 .section-title { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .section-title.compact { align-items: center; }
 .mode-note, .count-badge { color: var(--muted); font-size: 12px; }
-.job-form { display: grid; grid-template-columns: 1.2fr 1.2fr .5fr .72fr .72fr auto; gap: 12px; align-items: end; margin-top: 24px; }
+.job-form { display: grid; grid-template-columns: 1.2fr 1.2fr .72fr .72fr auto; gap: 12px; align-items: end; margin-top: 24px; }
 label { display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
 input, select, textarea { width: 100%; border: 1px solid var(--line); background: rgba(6, 10, 15, .55); color: var(--text); border-radius: 11px; padding: 13px 14px; outline: none; font: inherit; }
 input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(104, 224, 210, .1); }

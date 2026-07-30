@@ -50,7 +50,6 @@ class PipelineEngine:
         job_id: str,
         source_dir: Path,
         output_dir: Path | None,
-        mode: str,
         seed: int | None,
     ) -> PipelineResult:
         temporary_root = Path.cwd() / ".auto-cat-tmp"
@@ -61,7 +60,6 @@ class PipelineEngine:
                 job_id,
                 source_dir,
                 output_dir,
-                mode,
                 seed,
                 temporary_path,
             )
@@ -73,7 +71,6 @@ class PipelineEngine:
         job_id: str,
         source_dir: Path,
         output_dir: Path | None,
-        mode: str,
         seed: int | None,
         temporary_dir: Path,
     ) -> PipelineResult:
@@ -100,12 +97,11 @@ class PipelineEngine:
         if self.similarity_model == "pixai":
             embedding_label = "PixAI Tagger visual embedding"
             embedding_provider = make_pixai_embedding_provider(
-                mode,
                 self.settings.pixai_model_name,
             )
         else:
             embedding_label = "DINOv3 embedding"
-            embedding_provider = make_embedding_provider(mode, self.settings.dino_model_id)
+            embedding_provider = make_embedding_provider(self.settings.dino_model_id)
         self.emit(
             "embedding",
             "running",
@@ -116,11 +112,7 @@ class PipelineEngine:
         prepared_images = 0
         try:
             for index, record in enumerate(records):
-                prepared_path = (
-                    temporary_dir / f"{index:08d}.png"
-                    if mode == "real"
-                    else None
-                )
+                prepared_path = temporary_dir / f"{index:08d}.png"
                 record.embedding = embedding_provider.embed(record.path, prepared_path)
                 if prepared_path is not None and prepared_path.exists():
                     record.prepared_path = prepared_path
@@ -200,7 +192,6 @@ class PipelineEngine:
 
         self.emit("locate", "running", "只检查最大连通分量涉及的簇", 0.62, {})
         locate_provider = make_locate_provider(
-            mode,
             self.settings.locate_anything_endpoint,
             self.settings.locate_anything_model_id,
             self.settings.locate_anything_timeout_seconds,

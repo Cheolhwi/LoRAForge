@@ -1002,7 +1002,6 @@ async function checkHealth() {
     const response = await fetch(`${API}/health`);
     if (!response.ok) throw new Error();
     const payload = await response.json();
-    if (payload.mode === "real" || payload.mode === "mock") $("mode").value = payload.mode;
     setDefaultMinimumPixels(payload.minimum_pixels);
     const captionThreshold = Number(payload.pixai_caption_threshold);
     if (Number.isFinite(captionThreshold)) $("caption-threshold").value = captionThreshold;
@@ -1023,7 +1022,7 @@ async function checkHealth() {
       $("audit-description").textContent = `流水线运行到 ${label} 聚簇后，将在这里显示超低清缩略图。`;
       $("audit-note").textContent = `${label} 只负责把图片分组，不会在此处删除图片。`;
     }
-    setStatus($("health-badge"), `后端在线 · ${payload.mode || "unknown"}`, "completed");
+    setStatus($("health-badge"), "后端在线 · 真实模型", "completed");
   }
   catch { setStatus($("health-badge"), "后端未连接", "failed"); }
 }
@@ -1164,7 +1163,6 @@ $("job-form").addEventListener("submit", async (event) => {
       body: JSON.stringify({
         source_dir: $("source-dir").value,
         output_dir: $("output-dir").value || null,
-        mode: $("mode").value,
         similarity_model: $("similarity-model").value,
         minimum_pixels: Number($("minimum-pixels").value),
       }),
@@ -1220,7 +1218,6 @@ $("standalone-pixai-form").addEventListener("submit", async (event) => {
       body: JSON.stringify({
         source_dir: $("source-dir").value,
         output_dir: $("output-dir").value || null,
-        mode: $("mode").value,
         lora_prefix: prefix,
       }),
     });

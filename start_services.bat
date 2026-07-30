@@ -31,13 +31,9 @@ if not exist "%ROOT%pyproject.toml" (
 set "UV_CACHE_DIR=%ROOT%.uv-cache"
 
 if not exist "%ROOT%.env" (
-    echo [INFO] Creating .env from .env.example...
-    copy /Y "%ROOT%.env.example" "%ROOT%.env" >nul
-)
-
-set "MODE=mock"
-for /f "usebackq tokens=1,* delims==" %%A in ("%ROOT%.env") do (
-    if /I "%%A"=="APP_MODE" set "MODE=%%B"
+    echo [ERROR] Required project configuration .env was not found.
+    pause
+    exit /b 1
 )
 
 echo [INFO] Installing or updating Python 3.11...
@@ -49,60 +45,49 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if /I "%MODE%"=="real" (
-    echo [INFO] Real mode detected. Syncing base and model dependencies...
-    "%UV_EXE%" sync --extra models
-    if errorlevel 1 (
-        echo [ERROR] Model dependency installation failed.
-        pause
-        exit /b 1
-    )
-    echo [INFO] Checking and downloading model assets if needed...
-    "%UV_EXE%" run python scripts/bootstrap_models.py --mode real
-    if errorlevel 1 (
-        echo [ERROR] Model setup is incomplete. Services were not started.
-        pause
-        exit /b 1
-    )
+echo [INFO] Syncing application and model dependencies...
+"%UV_EXE%" sync --extra models
+if errorlevel 1 (
+    echo [ERROR] Model dependency installation failed.
+    pause
+    exit /b 1
+)
+echo [INFO] Checking and downloading model assets if needed...
+"%UV_EXE%" run python scripts/bootstrap_models.py
+if errorlevel 1 (
+    echo [ERROR] Model setup is incomplete. Services were not started.
+    pause
+    exit /b 1
+)
 
-    call :check_locate
+call :check_locate
+if errorlevel 1 (
+    call :check_port 9000
     if errorlevel 1 (
-        call :check_port 9000
+        echo [INFO] Starting Locate Anything 4bit CLI service on port 9000...
+        start "Auto Cat Locate Anything" powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command ^
+            "Set-Location -LiteralPath '%ROOT%'; $env:UV_CACHE_DIR = Join-Path (Get-Location) '.uv-cache'; & '%UV_EXE%' run python scripts/locate_anything_server.py --host 127.0.0.1 --port 9000"
+
+        echo [INFO] Waiting for Locate Anything model to finish loading...
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+            "$deadline = (Get-Date).AddMinutes(10); do { try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:9000/health' -TimeoutSec 3; if ($r.status -eq 'ok') { exit 0 } } catch {}; Start-Sleep -Seconds 3 } while ((Get-Date) -lt $deadline); exit 1"
         if errorlevel 1 (
-            echo [INFO] Starting Locate Anything 4bit CLI service on port 9000...
-            start "Auto Cat Locate Anything" powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command ^
-                "Set-Location -LiteralPath '%ROOT%'; $env:UV_CACHE_DIR = Join-Path (Get-Location) '.uv-cache'; & '%UV_EXE%' run python scripts/locate_anything_server.py --host 127.0.0.1 --port 9000"
-
-            echo [INFO] Waiting for Locate Anything model to finish loading...
-            powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-                "$deadline = (Get-Date).AddMinutes(10); do { try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:9000/health' -TimeoutSec 3; if ($r.status -eq 'ok') { exit 0 } } catch {}; Start-Sleep -Seconds 3 } while ((Get-Date) -lt $deadline); exit 1"
-            if errorlevel 1 (
-                echo [ERROR] Locate Anything service did not become healthy on port 9000.
-                echo [ERROR] Check the Auto Cat Locate Anything service window for model errors.
-                pause
-                exit /b 1
-            )
-        ) else (
-            echo [ERROR] Port 9000 is occupied, but Locate Anything health check failed.
-            echo [ERROR] Stop the conflicting process, then run this script again.
+            echo [ERROR] Locate Anything service did not become healthy on port 9000.
+            echo [ERROR] Check the Auto Cat Locate Anything service window for model errors.
             pause
             exit /b 1
         )
     ) else (
-        echo [OK] Reusing healthy Locate Anything service on port 9000.
-    )
-) else (
-    echo [INFO] Mock mode detected. Syncing base dependencies...
-    "%UV_EXE%" sync
-    if errorlevel 1 (
-        echo [ERROR] Dependency installation failed.
+        echo [ERROR] Port 9000 is occupied, but Locate Anything health check failed.
+        echo [ERROR] Stop the conflicting process, then run this script again.
         pause
         exit /b 1
     )
-    echo [INFO] Large model downloads are skipped.
+) else (
+    echo [OK] Reusing healthy Locate Anything service on port 9000.
 )
 
-call :check_backend "%MODE%"
+call :check_backend
 if errorlevel 1 (
     call :check_port 8000
     if errorlevel 1 (
@@ -110,7 +95,7 @@ if errorlevel 1 (
         start "Auto Cat Backend" powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command ^
             "Set-Location -LiteralPath '%ROOT%'; $env:UV_CACHE_DIR = Join-Path (Get-Location) '.uv-cache'; & '%UV_EXE%' run uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000"
         powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-            "$deadline = (Get-Date).AddMinutes(1); do { try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/api/health' -TimeoutSec 3; if ($r.status -eq 'ok' -and $r.mode -eq '%MODE%') { exit 0 } } catch {}; Start-Sleep -Seconds 2 } while ((Get-Date) -lt $deadline); exit 1"
+            "$deadline = (Get-Date).AddMinutes(1); do { try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/api/health' -TimeoutSec 3; if ($r.status -eq 'ok' -and $r.runtime -eq 'local_models') { exit 0 } } catch {}; Start-Sleep -Seconds 2 } while ((Get-Date) -lt $deadline); exit 1"
         if errorlevel 1 (
             echo [ERROR] Backend did not become healthy on port 8000.
             pause
@@ -154,8 +139,8 @@ if not defined AUTO_CAT_NO_BROWSER start "" http://127.0.0.1:5173
 
 echo [OK] Backend:  http://127.0.0.1:8000
 echo [OK] Frontend: http://127.0.0.1:5173
-if /I "%MODE%"=="real" echo [OK] Locate:   http://127.0.0.1:9000/v1/chat/completions
-if /I "%MODE%"=="real" echo [OK] PixAI:    local ONNX model ready for Review Submit
+echo [OK] Locate:   http://127.0.0.1:9000/v1/chat/completions
+echo [OK] PixAI:    local ONNX model ready for Review Submit
 echo [INFO] Running healthy services are reused when this script is launched again.
 echo [INFO] To stop all Auto Cat services, double-click stop_services.bat.
 
@@ -167,7 +152,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-Re
 exit /b %errorlevel%
 
 :check_backend
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/api/health' -TimeoutSec 3; if ($r.status -eq 'ok' -and $r.mode -eq '%~1') { exit 0 } } catch {}; exit 1" >nul 2>&1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/api/health' -TimeoutSec 3; if ($r.status -eq 'ok' -and $r.runtime -eq 'local_models') { exit 0 } } catch {}; exit 1" >nul 2>&1
 exit /b %errorlevel%
 
 :check_frontend

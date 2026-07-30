@@ -7,6 +7,7 @@ import httpx
 import numpy as np
 import pytest
 from app import folder_dialog
+from app import jobs as jobs_module
 from app import main as main_module
 from app.config import Settings
 from app.jobs import JobManager, JobState, _json_safe
@@ -24,7 +25,6 @@ from app.pipeline.curation import (
     select_dataset,
 )
 from app.pipeline.embedding import (
-    MockPixAIEmbeddingProvider,
     PixAIEmbeddingProvider,
     _save_preprocessed_image,
 )
@@ -32,16 +32,74 @@ from app.pipeline.engine import PipelineEngine
 from app.pipeline.graph import build_mutual_topk_graph, connected_components, iterative_k_core
 from app.pipeline.locate import (
     LocateAnythingHttpProvider,
-    MockLocateAnythingProvider,
     _extract_boxes,
     inspect_image,
 )
 from app.pipeline.pixai_parent_rules import load_pixai_parent_rules
+from app.pipeline.prompts import COMIC_PROMPT, WATERMARK_PROMPT
 from app.pipeline.scan import scan_images
 from app.pipeline.types import Cluster, ImageRecord, Inspection, PipelineResult
 from app.schemas import CurationFinalize, CurationStart, JobCreate, PixAIJobCreate
 from PIL import Image
 from pydantic import ValidationError
+
+
+class FakeEmbeddingProvider:
+    dimension = 1024
+
+    def embed(self, path: Path, prepared_path: Path | None = None) -> np.ndarray:
+        with Image.open(path) as image:
+            pixels = np.asarray(
+                image.convert("L").resize((32, 32), Image.Resampling.LANCZOS),
+                dtype=np.float32,
+            ).reshape(-1)
+            if prepared_path is not None:
+                image.convert("RGB").resize((448, 448), Image.Resampling.BILINEAR).save(
+                    prepared_path,
+                    format="PNG",
+                )
+        pixels -= pixels.mean()
+        norm = np.linalg.norm(pixels)
+        if norm <= 1e-12:
+            pixels = np.ones(self.dimension, dtype=np.float32)
+            norm = np.linalg.norm(pixels)
+        return (pixels / norm).astype(np.float32)
+
+    def close(self) -> None:
+        return None
+
+
+class FakeLocateAnythingProvider:
+    def locate(self, path: Path, prompt: str) -> list[list[float]]:
+        name = path.stem.casefold()
+        if prompt == WATERMARK_PROMPT and any(
+            token in name for token in ("watermark", "logo", "sample")
+        ):
+            return [[0.1, 0.1, 0.4, 0.2]]
+        if prompt == COMIC_PROMPT and any(
+            token in name for token in ("comic", "collage", "manga", "panel")
+        ):
+            return [[0.0, 0.0, 0.45, 1.0], [0.55, 0.0, 1.0, 1.0]]
+        return []
+
+    def close(self) -> None:
+        return None
+
+
+class FakePixAITagger:
+    def tag(self, image_path: Path) -> dict[str, float]:
+        return {
+            "1girl": 0.96,
+            "solo": 0.93,
+            "looking_at_viewer": 0.82,
+            "upper_body": 0.78,
+            "indoors": 0.74,
+            "long_hair": 0.72,
+            "smile": 0.61,
+        }
+
+    def close(self) -> None:
+        return None
 
 
 def make_caption_rule_item(
@@ -712,12 +770,12 @@ def test_lora_prefix_rejects_spaces():
         CurationStart(lora_prefix="bad prefix")
 
 
-def test_mock_curation_pipeline_writes_metadata_images_and_captions(tmp_path):
+def test_curation_pipeline_writes_metadata_images_and_captions(monkeypatch, tmp_path):
     output_dir = tmp_path / "filtered"
     output_dir.mkdir()
     output_image = output_dir / "00001-image.png"
     Image.new("RGB", (64, 64), "purple").save(output_image)
-    state = JobState("curation-job", str(tmp_path), str(output_dir), "mock")
+    state = JobState("curation-job", str(tmp_path), str(output_dir))
     state.status = "completed"
     state.manifest = [
         {
@@ -736,12 +794,12 @@ def test_mock_curation_pipeline_writes_metadata_images_and_captions(tmp_path):
         def submit(callback, *args):
             callback(*args)
 
-    manager = JobManager(
-        Settings(
-            app_mode="mock",
-            pixai_caption_remove_all_text_tags=True,
-        )
+    monkeypatch.setattr(
+        jobs_module,
+        "make_pixai_tagger",
+        lambda *args: FakePixAITagger(),
     )
+    manager = JobManager(Settings(pixai_caption_remove_all_text_tags=True))
     manager.executor = InlineExecutor()
 
     manager.start_curation(state, "artist_style")
@@ -805,7 +863,7 @@ def test_mock_curation_pipeline_writes_metadata_images_and_captions(tmp_path):
     assert "speech_bubble" in metadata["selection_report"]["effective_denylist"]
 
 
-def test_pixai_only_uses_all_folder_images_without_visual_filtering(tmp_path):
+def test_pixai_only_uses_all_folder_images_without_visual_filtering(monkeypatch, tmp_path):
     source_dir = tmp_path / "source"
     first_dir = source_dir / "first"
     second_dir = source_dir / "second"
@@ -827,13 +885,17 @@ def test_pixai_only_uses_all_folder_images_without_visual_filtering(tmp_path):
         def submit(callback, *args):
             callback(*args)
 
-    manager = JobManager(Settings(app_mode="mock"))
+    monkeypatch.setattr(
+        jobs_module,
+        "make_pixai_tagger",
+        lambda *args: FakePixAITagger(),
+    )
+    manager = JobManager(Settings())
     manager.executor = InlineExecutor()
 
     state, result = manager.create_pixai_only(
         str(source_dir),
         str(output_dir),
-        "mock",
         "direct_style",
     )
 
@@ -877,7 +939,6 @@ def test_pixai_only_preview_rejects_source_outside_selected_folder(tmp_path):
         "pixai-preview",
         str(source_dir),
         str(output_dir),
-        "mock",
         workflow="pixai_only",
     )
     state.manifest = [
@@ -891,7 +952,7 @@ def test_pixai_only_preview_rejects_source_outside_selected_folder(tmp_path):
             "reason": None,
         }
     ]
-    manager = JobManager(Settings(app_mode="mock"))
+    manager = JobManager(Settings())
     try:
         with pytest.raises(PermissionError, match="outside the task input"):
             manager.curation_image_path(state, 0)
@@ -904,7 +965,7 @@ def test_review_image_serves_only_passed_task_output(monkeypatch, tmp_path):
     output_dir.mkdir()
     output_image = output_dir / "00001-image.png"
     Image.new("RGB", (32, 32), "green").save(output_image)
-    state = JobState("review-job", str(tmp_path), str(output_dir), "mock")
+    state = JobState("review-job", str(tmp_path), str(output_dir))
     state.manifest = [
         {
             "source": str(tmp_path / "image.png"),
@@ -928,7 +989,7 @@ def test_review_image_rejects_path_outside_task_output(monkeypatch, tmp_path):
     output_dir.mkdir()
     outside_image = tmp_path / "outside.png"
     Image.new("RGB", (32, 32), "red").save(outside_image)
-    state = JobState("review-job", str(tmp_path), str(output_dir), "mock")
+    state = JobState("review-job", str(tmp_path), str(output_dir))
     state.manifest = [
         {
             "source": str(outside_image),
@@ -954,7 +1015,7 @@ def test_review_remove_and_restore_updates_file_manifest_and_count(tmp_path):
     output_image = output_dir / "00001-image.png"
     Image.new("RGB", (32, 32), "blue").save(output_image)
     manifest_path = output_dir / "manifest.json"
-    state = JobState("review-mutation", str(tmp_path), str(output_dir), "mock")
+    state = JobState("review-mutation", str(tmp_path), str(output_dir))
     state.manifest = [
         {
             "source": str(tmp_path / "image.png"),
@@ -1001,7 +1062,7 @@ def test_review_remove_and_restore_updates_file_manifest_and_count(tmp_path):
 def test_review_remove_rejects_non_passed_item(tmp_path):
     output_dir = tmp_path / "filtered"
     output_dir.mkdir()
-    state = JobState("review-rejected", str(tmp_path), str(output_dir), "mock")
+    state = JobState("review-rejected", str(tmp_path), str(output_dir))
     state.manifest = [
         {
             "source": str(tmp_path / "image.png"),
@@ -1147,22 +1208,6 @@ def test_save_preprocessed_image_creates_lossless_448_png(tmp_path):
         assert prepared.getpixel((0, 0)) == (128, 128, 128)
 
 
-def test_mock_pixai_embedding_is_normalized_color_aware_and_1024_dimensional(tmp_path):
-    red = tmp_path / "red.png"
-    blue = tmp_path / "blue.png"
-    Image.new("RGB", (64, 64), "red").save(red)
-    Image.new("RGB", (64, 64), "blue").save(blue)
-    provider = MockPixAIEmbeddingProvider()
-
-    red_vector = provider.embed(red)
-    blue_vector = provider.embed(blue)
-
-    assert red_vector.shape == (1024,)
-    assert np.linalg.norm(red_vector) == pytest.approx(1.0)
-    assert np.linalg.norm(blue_vector) == pytest.approx(1.0)
-    assert float(red_vector @ blue_vector) < 0.5
-
-
 def test_real_pixai_embedding_uses_saved_448_input(tmp_path):
     source = tmp_path / "source.png"
     prepared = tmp_path / "prepared.png"
@@ -1191,23 +1236,28 @@ def test_real_pixai_embedding_uses_saved_448_input(tmp_path):
     assert np.linalg.norm(vector) == pytest.approx(1.0)
 
 
-def test_pipeline_can_use_pixai_visual_embedding_experiment(tmp_path):
+def test_pipeline_can_use_pixai_visual_embedding_experiment(monkeypatch, tmp_path):
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "output"
     source_dir.mkdir()
     Image.new("RGB", (1200, 1200), "purple").save(source_dir / "image.png")
     events = []
+    monkeypatch.setattr(
+        engine_module,
+        "make_pixai_embedding_provider",
+        lambda model_name: FakeEmbeddingProvider(),
+    )
     engine = PipelineEngine(
-        Settings(app_mode="mock"),
+        Settings(),
         lambda *args: events.append(args),
         similarity_model="pixai",
     )
 
-    result = engine.run("pixai-embedding", source_dir, output_dir, "mock", None)
+    result = engine.run("pixai-embedding", source_dir, output_dir, None)
 
     assert result.stats["embedding_model"] == "pixai"
     assert result.stats["embedding_dimension"] == 1024
-    assert result.stats["prepared_images"] == 0
+    assert result.stats["prepared_images"] == 1
     assert any(
         event[0] == "embedding"
         and event[1] == "running"
@@ -1221,6 +1271,14 @@ def test_job_create_rejects_unknown_similarity_model():
         JobCreate(source_dir="images", similarity_model="unknown")
 
 
+def test_runtime_mode_is_not_exposed_by_api_models_or_health():
+    assert "mode" not in JobCreate.model_fields
+    assert "mode" not in PixAIJobCreate.model_fields
+    health = main_module.health()
+    assert "mode" not in health
+    assert health["runtime"] == "local_models"
+
+
 def test_job_create_accepts_task_resolution_threshold_and_rejects_too_small_values():
     request = JobCreate(source_dir="images", minimum_pixels=1280 * 720)
 
@@ -1229,19 +1287,24 @@ def test_job_create_accepts_task_resolution_threshold_and_rejects_too_small_valu
         JobCreate(source_dir="images", minimum_pixels=10_000)
 
 
-def test_pipeline_uses_task_resolution_threshold(tmp_path):
+def test_pipeline_uses_task_resolution_threshold(monkeypatch, tmp_path):
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "output"
     source_dir.mkdir()
     Image.new("RGB", (720, 1280), "teal").save(source_dir / "portrait-720p.png")
     events = []
+    monkeypatch.setattr(
+        engine_module,
+        "make_embedding_provider",
+        lambda model_id: FakeEmbeddingProvider(),
+    )
     engine = PipelineEngine(
-        Settings(app_mode="mock"),
+        Settings(),
         lambda *args: events.append(args),
         minimum_pixels=1280 * 720,
     )
 
-    result = engine.run("720p-threshold", source_dir, output_dir, "mock", None)
+    result = engine.run("720p-threshold", source_dir, output_dir, None)
 
     assert result.stats["minimum_pixels"] == 921_600
     assert result.stats["embedding_candidates"] == 1
@@ -1257,14 +1320,14 @@ def test_pipeline_temporary_images_are_removed_after_success(monkeypatch):
     engine = PipelineEngine(Settings(), lambda *args: None)
     captured_path = None
 
-    def fake_run_pipeline(job_id, source_dir, output_dir, mode, seed, temporary_dir):
+    def fake_run_pipeline(job_id, source_dir, output_dir, seed, temporary_dir):
         nonlocal captured_path
         captured_path = temporary_dir
         (temporary_dir / "prepared.png").write_bytes(b"temporary")
         return PipelineResult(stats={}, manifest=[])
 
     monkeypatch.setattr(engine, "_run_pipeline", fake_run_pipeline)
-    engine.run("cleanup-success", Path("."), None, "real", None)
+    engine.run("cleanup-success", Path("."), None, None)
 
     assert captured_path is not None
     assert not captured_path.exists()
@@ -1274,7 +1337,7 @@ def test_pipeline_temporary_images_are_removed_after_failure(monkeypatch):
     engine = PipelineEngine(Settings(), lambda *args: None)
     captured_path = None
 
-    def fake_run_pipeline(job_id, source_dir, output_dir, mode, seed, temporary_dir):
+    def fake_run_pipeline(job_id, source_dir, output_dir, seed, temporary_dir):
         nonlocal captured_path
         captured_path = temporary_dir
         (temporary_dir / "prepared.png").write_bytes(b"temporary")
@@ -1282,7 +1345,7 @@ def test_pipeline_temporary_images_are_removed_after_failure(monkeypatch):
 
     monkeypatch.setattr(engine, "_run_pipeline", fake_run_pipeline)
     with pytest.raises(RuntimeError, match="expected failure"):
-        engine.run("cleanup-failure", Path("."), None, "real", None)
+        engine.run("cleanup-failure", Path("."), None, None)
 
     assert captured_path is not None
     assert not captured_path.exists()
@@ -1295,7 +1358,7 @@ def test_pipeline_temporary_images_are_removed_after_failure(monkeypatch):
         ("pixai", "make_pixai_embedding_provider"),
     ],
 )
-def test_real_pipeline_reuses_prepared_image_for_locate(
+def test_pipeline_reuses_prepared_image_for_locate(
     monkeypatch,
     tmp_path,
     similarity_model,
@@ -1353,7 +1416,7 @@ def test_real_pipeline_reuses_prepared_image_for_locate(
     monkeypatch.setattr(
         engine_module,
         factory_name,
-        lambda mode, model_id: FakeEmbeddingProvider(),
+        lambda model_id: FakeEmbeddingProvider(),
     )
     monkeypatch.setattr(engine_module, "complete_linkage_clusters", fake_clusters)
     monkeypatch.setattr(engine_module, "make_locate_provider", lambda *args: FakeLocateProvider())
@@ -1378,7 +1441,7 @@ def test_real_pipeline_reuses_prepared_image_for_locate(
             },
         ),
     )
-    result = engine.run("prepared-reuse", source_dir, output_dir, "real", None)
+    result = engine.run("prepared-reuse", source_dir, output_dir, None)
 
     assert provider_closed
     assert locate_provider_closed
@@ -1407,7 +1470,7 @@ def test_locate_detection_steps_are_reported():
     steps = []
 
     inspection = inspect_image(
-        MockLocateAnythingProvider(),
+        FakeLocateAnythingProvider(),
         Path("comic.png"),
         1,
         on_step=lambda *args: steps.append(args),
@@ -1511,7 +1574,7 @@ def test_json_safe_converts_numpy_values_recursively():
 
 def test_job_event_stream_serializes_numpy_values():
     manager = JobManager(Settings())
-    state = JobState("test-job", "source", None, "mock")
+    state = JobState("test-job", "source", None)
     try:
         manager._event(
             state,
@@ -1541,7 +1604,7 @@ def test_job_event_stream_serializes_numpy_values():
 
 def test_job_event_stream_resumes_after_last_event_id():
     manager = JobManager(Settings())
-    state = JobState("resume-job", "source", None, "mock")
+    state = JobState("resume-job", "source", None)
     try:
         manager._event(state, "scan", "running", "first", 0.1, {})
         manager._event(state, "scan", "completed", "second", 0.2, {})
@@ -1562,7 +1625,7 @@ def test_cluster_audit_registers_sources_but_hides_paths_from_event(tmp_path):
     image_path = tmp_path / "image.png"
     Image.new("RGB", (120, 80), "purple").save(image_path)
     manager = JobManager(Settings())
-    state = JobState("audit-job", str(tmp_path), None, "mock")
+    state = JobState("audit-job", str(tmp_path), None)
     try:
         manager._event(
             state,
@@ -1603,7 +1666,7 @@ def test_cluster_audit_registers_sources_but_hides_paths_from_event(tmp_path):
 def test_audit_thumbnail_is_tiny_jpeg(monkeypatch, tmp_path):
     image_path = tmp_path / "wide.png"
     Image.new("RGB", (1200, 600), "orange").save(image_path)
-    state = JobState("audit-thumbnail", str(tmp_path), None, "mock")
+    state = JobState("audit-thumbnail", str(tmp_path), None)
     state.audit_images["image-id"] = str(image_path)
     monkeypatch.setattr(main_module, "get_state", lambda job_id: state)
 
@@ -1616,7 +1679,7 @@ def test_audit_thumbnail_is_tiny_jpeg(monkeypatch, tmp_path):
 
 
 def test_locate_rules():
-    provider = MockLocateAnythingProvider()
+    provider = FakeLocateAnythingProvider()
     assert inspect_image(provider, Path("clean.jpg"), 1).meets
     watermark = inspect_image(provider, Path("watermark.jpg"), 1)
     assert not watermark.meets and watermark.reason == "watermark_detected"

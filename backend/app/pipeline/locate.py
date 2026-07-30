@@ -24,22 +24,10 @@ class LocateAnythingProvider:
         pass
 
 
-class MockLocateAnythingProvider(LocateAnythingProvider):
-    """Filename switches make it easy to preview pass/fail/retry branches."""
-
-    def locate(self, path: Path, prompt: str) -> list[list[float]]:
-        name = path.stem.lower()
-        if prompt == WATERMARK_PROMPT and any(token in name for token in ("watermark", "logo", "sample")):
-            return [[0.1, 0.1, 0.4, 0.2]]
-        if prompt == COMIC_PROMPT and any(token in name for token in ("comic", "collage", "manga", "panel")):
-            return [[0.0, 0.0, 0.45, 1.0], [0.55, 0.0, 1.0, 1.0]]
-        return []
-
-
 class LocateAnythingHttpProvider(LocateAnythingProvider):
     def __init__(self, endpoint: str, model_id: str, timeout_seconds: int = 180, max_tokens: int = 1024):
         if not endpoint:
-            raise RuntimeError("real mode requires LOCATE_ANYTHING_ENDPOINT")
+            raise RuntimeError("LOCATE_ANYTHING_ENDPOINT is required")
         self.endpoint = endpoint
         self.model_id = model_id
         self.timeout = timeout_seconds
@@ -123,15 +111,12 @@ def _parse_box_tokens(content: str, width: int | None, height: int | None) -> li
 
 
 def make_locate_provider(
-    mode: str,
     endpoint: str,
     model_id: str,
     timeout_seconds: int,
     max_tokens: int,
 ) -> LocateAnythingProvider:
-    if mode == "real":
-        return LocateAnythingHttpProvider(endpoint, model_id, timeout_seconds, max_tokens)
-    return MockLocateAnythingProvider()
+    return LocateAnythingHttpProvider(endpoint, model_id, timeout_seconds, max_tokens)
 
 
 def inspect_image(

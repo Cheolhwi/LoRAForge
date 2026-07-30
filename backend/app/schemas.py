@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class JobCreate(BaseModel):
     source_dir: str = Field(min_length=1)
     output_dir: str | None = None
-    mode: Literal["mock", "real"] | None = None
     similarity_model: Literal["dinov3", "pixai"] = "dinov3"
     minimum_pixels: int | None = Field(default=None, ge=65_536, le=100_000_000)
     seed: int | None = None
@@ -27,7 +26,6 @@ class PipelineEvent(BaseModel):
 class JobSummary(BaseModel):
     job_id: str
     status: str
-    mode: str
     workflow: str = "filtering"
     similarity_model: str = "dinov3"
     minimum_pixels: int | None = None
@@ -72,7 +70,6 @@ class CurationStart(BaseModel):
 class PixAIJobCreate(CurationStart):
     source_dir: str = Field(min_length=1)
     output_dir: str | None = None
-    mode: Literal["mock", "real"] | None = None
 
 
 class CurationFinalize(BaseModel):

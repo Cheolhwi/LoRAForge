@@ -57,7 +57,6 @@ class JobState:
         job_id: str,
         source_dir: str,
         output_dir: str | None,
-        mode: str,
         workflow: str = "filtering",
         similarity_model: str = "dinov3",
         minimum_pixels: int | None = None,
@@ -65,7 +64,6 @@ class JobState:
         self.job_id = job_id
         self.source_dir = source_dir
         self.output_dir = output_dir
-        self.mode = mode
         self.workflow = workflow
         self.similarity_model = similarity_model
         self.minimum_pixels = minimum_pixels
@@ -88,7 +86,6 @@ class JobState:
             return JobSummary(
                 job_id=self.job_id,
                 status=self.status,
-                mode=self.mode,
                 workflow=self.workflow,
                 similarity_model=self.similarity_model,
                 minimum_pixels=self.minimum_pixels,
@@ -114,7 +111,6 @@ class JobManager:
         self,
         source_dir: str,
         output_dir: str | None,
-        mode: str,
         seed: int | None,
         similarity_model: str = "dinov3",
         minimum_pixels: int | None = None,
@@ -129,7 +125,6 @@ class JobManager:
             job_id,
             source_dir,
             output_dir,
-            mode,
             similarity_model=similarity_model,
             minimum_pixels=resolved_minimum_pixels,
         )
@@ -142,7 +137,6 @@ class JobManager:
         self,
         source_dir: str,
         output_dir: str | None,
-        mode: str,
         lora_prefix: str,
     ) -> tuple[JobState, dict[str, Any]]:
         source_root = Path(source_dir).expanduser().resolve()
@@ -177,7 +171,6 @@ class JobManager:
             job_id,
             str(source_root),
             str(output_root),
-            mode,
             workflow="pixai_only",
             similarity_model="none",
         )
@@ -239,7 +232,6 @@ class JobManager:
                 state.job_id,
                 Path(state.source_dir),
                 Path(state.output_dir) if state.output_dir else None,
-                state.mode,
                 seed,
             )
             with state.lock:
@@ -368,7 +360,6 @@ class JobManager:
                 input_root = self._curation_input_root(state)
                 lora_prefix = str(state.curation["lora_prefix"])
             provider = make_pixai_tagger(
-                state.mode,
                 self.settings.pixai_model_name,
                 self.settings.pixai_model_id,
                 self.settings.pixai_storage_threshold,

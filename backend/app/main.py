@@ -38,7 +38,7 @@ app.add_middleware(
 def health():
     return {
         "status": "ok",
-        "mode": settings.app_mode,
+        "runtime": "local_models",
         "minimum_pixels": settings.min_megapixels,
         "complete_linkage_similarity": settings.complete_linkage_similarity,
         "pixai_model_id": settings.pixai_model_id,
@@ -61,11 +61,9 @@ def choose_folder(purpose: Literal["source", "output"] = Query(default="source")
 
 @app.post("/api/jobs", response_model=JobSummary, status_code=202)
 def create_job(request: JobCreate):
-    mode = request.mode or settings.app_mode
     state = manager.create(
         request.source_dir,
         request.output_dir,
-        mode,
         request.seed,
         request.similarity_model,
         request.minimum_pixels,
@@ -75,12 +73,10 @@ def create_job(request: JobCreate):
 
 @app.post("/api/pixai/jobs", status_code=202)
 def create_pixai_job(request: PixAIJobCreate):
-    mode = request.mode or settings.app_mode
     try:
         _, result = manager.create_pixai_only(
             request.source_dir,
             request.output_dir,
-            mode,
             request.lora_prefix,
         )
         return result

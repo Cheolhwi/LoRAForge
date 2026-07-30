@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import os
 from pathlib import Path
 
@@ -19,19 +18,10 @@ def load_dotenv(path: Path) -> dict[str, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Prepare model assets for Auto Cat real mode")
-    parser.add_argument("--mode", choices=("mock", "real"), default=None)
-    args = parser.parse_args()
-
     root = Path(__file__).resolve().parents[1]
     dotenv = load_dotenv(root / ".env")
     for key, value in dotenv.items():
         os.environ.setdefault(key, value)
-
-    mode = args.mode or os.getenv("APP_MODE", "mock")
-    if mode != "real":
-        print("[models] APP_MODE is mock; model download is not required.")
-        return 0
 
     dino_model_id = os.getenv("DINO_MODEL_ID", "facebook/dinov3-vitl16-pretrain-lvd1689m")
     locate_model_id = os.getenv(
@@ -61,7 +51,7 @@ def main() -> int:
         return 1
 
     if not locate_endpoint:
-        print("[ERROR] LOCATE_ANYTHING_ENDPOINT is empty in real mode.")
+        print("[ERROR] LOCATE_ANYTHING_ENDPOINT is empty.")
         print("        Start a Locate Anything service and set its /v1/chat/completions URL in .env.")
         return 1
 
