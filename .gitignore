@@ -1,0 +1,56 @@
+# Python environments, caches, and build output
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Runtime state and diagnostics
+.auto-cat-tmp/
+*.log
+*.log.*
+*.pid
+
+# Local test data and generated datasets
+test_image/
+filtered_dataset_*/
+pixai_dataset_*/
+output/
+outputs/
+runs/
+
+# Local model/download caches
+.cache/
+.huggingface/
+model_cache/
+models_cache/
+
+# Regenerable PixAI rule-review artifacts
+backend/app/pipeline/resources/pixai_parent_llm_reviews/
+backend/app/pipeline/resources/pixai_parent_llm_validations/
+backend/app/pipeline/resources/pixai_parent_llm_review_summary.json
+backend/app/pipeline/resources/pixai_parent_llm_validation_report.json
+backend/app/pipeline/resources/pixai_parent_llm_proposed_overrides.json
+backend/app/pipeline/resources/pixai_parent_review_candidates.json
+backend/app/pipeline/resources/pixai_parent_rules_report.json
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
