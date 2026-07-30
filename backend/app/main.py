@@ -24,7 +24,7 @@ from .schemas import (
 
 settings = get_settings()
 manager = JobManager(settings)
-app = FastAPI(title="Auto Cat Pipeline API", version="0.1.0")
+app = FastAPI(title="LoRAForge Pipeline API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -49,9 +49,12 @@ def health():
 
 
 @app.get("/api/folders/select")
-def choose_folder(purpose: Literal["source", "output"] = Query(default="source")):
+def choose_folder(
+    purpose: Literal["source", "output"] = Query(default="source"),
+    locale: Literal["zh", "en"] = Query(default="zh"),
+):
     try:
-        selected = select_folder(purpose)
+        selected = select_folder(purpose, locale=locale)
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="folder selection timed out") from exc
     except RuntimeError as exc:

@@ -3,18 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Auto Cat · 数据集筛选编排器</title>
+    <title>LoRAForge · 数据集筛选编排器</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div>
-          <div class="eyebrow">AUTO CAT / PIPELINE ORCHESTRATOR</div>
+          <div class="eyebrow">LORAFORGE / PIPELINE ORCHESTRATOR</div>
           <h1>图片数据集筛选台</h1>
           <p>把去重、聚类、图筛选与视觉质检串成一条可观察的流水线。</p>
         </div>
-        <div id="health-badge" class="status-pill pending">正在连接后端</div>
+        <div class="topbar-actions">
+          <nav class="language-switch" aria-label="语言">
+            <button type="button" data-language="zh">中文</button>
+            <button type="button" data-language="en">English</button>
+          </nav>
+          <div id="health-badge" class="status-pill pending">正在连接后端</div>
+        </div>
       </header>
 
       <main>
@@ -430,7 +436,7 @@
           </div>
         </section>
       </main>
-      <footer>Auto Cat / Visual Embedding → Graph Filter → Locate Anything → Review → PixAI → Caption</footer>
+      <footer>LoRAForge / Visual Embedding → Graph Filter → Locate Anything → Review → PixAI → Caption</footer>
     </div>
 
     <div id="review-lightbox" class="review-lightbox" role="dialog" aria-modal="true" aria-label="最终数据集图片查看器" hidden>
@@ -452,6 +458,7 @@
       <button id="review-next" class="review-nav review-next" type="button" aria-label="下一张图片">›</button>
     </div>
 
+    <script src="./i18n.js"></script>
     <script src="./app.js" type="module"></script>
   </body>
 </html>

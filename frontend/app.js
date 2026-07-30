@@ -1,4 +1,6 @@
 const API = window.AUTO_CAT_API || "http://127.0.0.1:8000/api";
+const UI_LANGUAGE = window.LoRAForgeI18n?.language || "zh";
+const translate = window.LoRAForgeI18n?.translate || ((value) => value);
 let configuredClusterSimilarity = 0.90;
 let currentJob = null;
 let eventSource = null;
@@ -85,7 +87,6 @@ function updateControlAvailability() {
     button.disabled = jobRunning || pickerOpen;
   });
   $("clear-output-dir").disabled = jobRunning || pickerOpen || !$("output-dir").value;
-  $("mode").disabled = jobRunning || pickerOpen;
   $("similarity-model").disabled = jobRunning || pickerOpen;
   $("minimum-pixels").disabled = jobRunning || pickerOpen;
   const standalonePrefix = $("standalone-lora-prefix");
@@ -114,7 +115,9 @@ async function chooseFolder(button) {
   button.textContent = "等待选择…";
   $("progress-message").textContent = "请在弹出的 Windows 窗口中选择文件夹";
   try {
-    const response = await fetch(`${API}/folders/select?purpose=${encodeURIComponent(purpose)}`);
+    const response = await fetch(
+      `${API}/folders/select?purpose=${encodeURIComponent(purpose)}&locale=${encodeURIComponent(UI_LANGUAGE)}`,
+    );
     if (!response.ok) {
       let detail = await response.text();
       try { detail = (JSON.parse(detail).detail || detail); } catch {}
@@ -946,7 +949,7 @@ async function removeCurrentReviewImage() {
   const item = reviewItems[reviewIndex];
   if (!item) return;
   const filename = item.source.split(/[\\/]/).pop();
-  if (!window.confirm(`确定将“${filename}”移出最终数据集吗？\n\n文件会被移到可恢复区，可以立即撤销。`)) return;
+  if (!window.confirm(translate(`确定将“${filename}”移出最终数据集吗？\n\n文件会被移到可恢复区，可以立即撤销。`))) return;
 
   const button = $("review-remove");
   const originalLabel = button.textContent;

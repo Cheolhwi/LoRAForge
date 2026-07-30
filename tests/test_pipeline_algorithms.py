@@ -1111,6 +1111,22 @@ def test_native_folder_picker_cancel_returns_none(monkeypatch):
     assert folder_dialog.select_folder("output") is None
 
 
+def test_native_folder_picker_uses_english_title(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["environment"] = kwargs["env"]
+        return folder_dialog.subprocess.CompletedProcess(command, 0, f"{tmp_path}\n", "")
+
+    monkeypatch.setattr(folder_dialog.sys, "platform", "win32")
+    monkeypatch.setattr(folder_dialog.subprocess, "run", fake_run)
+
+    assert folder_dialog.select_folder("source", locale="en") == tmp_path
+    assert captured["environment"]["AUTO_CAT_FOLDER_DIALOG_TITLE"] == (
+        "Select the image folder to process"
+    )
+
+
 def test_native_folder_picker_reports_process_error(monkeypatch):
     def fake_run(command, **kwargs):
         return folder_dialog.subprocess.CompletedProcess(command, 1, "", "dialog unavailable")

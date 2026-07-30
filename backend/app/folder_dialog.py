@@ -37,11 +37,18 @@ finally {
 """
 
 
-def select_folder(purpose: str, timeout_seconds: int = 600) -> Path | None:
+def select_folder(purpose: str, timeout_seconds: int = 600, locale: str = "zh") -> Path | None:
     if sys.platform != "win32":
         raise RuntimeError("native folder selection is currently supported only on Windows")
 
-    title = "选择需要筛选的图片文件夹" if purpose == "source" else "选择筛选结果输出文件夹"
+    if locale == "en":
+        title = (
+            "Select the image folder to process"
+            if purpose == "source"
+            else "Select the output folder"
+        )
+    else:
+        title = "选择需要筛选的图片文件夹" if purpose == "source" else "选择筛选结果输出文件夹"
     environment = os.environ.copy()
     environment["AUTO_CAT_FOLDER_DIALOG_TITLE"] = title
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
