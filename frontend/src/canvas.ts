@@ -1,4 +1,4 @@
-const $ = (id) => document.getElementById(id);
+const $ = (id: string): any => document.getElementById(id);
 
 const optionDefaults = {
   deduplicate: true,
@@ -55,6 +55,13 @@ let focusedSection = null;
 let savedCanvasView = null;
 let directPixaiMode = localStorage.getItem("loraforge-direct-pixai") === "true";
 let syncToolbarRunState = () => {};
+let transformFrame = 0;
+let edgeFrame = 0;
+let pendingEdgeSvg = null;
+let dragFrame = 0;
+let pendingDragPosition = null;
+let highlightFrame = 0;
+let pendingHighlight = null;
 
 const sectionGroups = {
   clustering: ["node-clustering"],
@@ -74,8 +81,8 @@ const directBypassNodes = [
   "review-panel",
 ];
 
-function element(tag, className, text) {
-  const item = document.createElement(tag);
+function element(tag: string, className = "", text?: string): any {
+  const item: any = document.createElement(tag);
   if (className) item.className = className;
   if (text !== undefined) item.textContent = text;
   return item;
@@ -143,7 +150,7 @@ function makeNode({
   stage,
   locked = false,
   className = "",
-}) {
+}: any) {
   const node = element(
     "article",
     `flow-node liquid-panel ${className} ${stage ? "pipeline-node" : ""}`.trim(),
@@ -224,34 +231,34 @@ function resolutionPreview() {
 }
 
 function buildCanvas() {
-  const oldShell = document.querySelector(".app-shell");
+  const oldShell = document.querySelector<any>(".app-shell");
   if (!oldShell) {
     finishCanvasBoot();
     return;
   }
 
-  const controlPanel = document.querySelector(".control-panel");
-  const similarityModelField = document.querySelector(".similarity-model-field");
-  const resolutionThresholdField = document.querySelector(".resolution-threshold-field");
-  const completeLinkageField = document.querySelector(".complete-linkage-field");
-  const graphSimilarityField = document.querySelector(".graph-similarity-field");
-  const pipelinePanel = document.querySelector(".pipeline-panel");
-  const statsPanel = document.querySelector(".stats-panel");
+  const controlPanel = document.querySelector<any>(".control-panel");
+  const similarityModelField = document.querySelector<any>(".similarity-model-field");
+  const resolutionThresholdField = document.querySelector<any>(".resolution-threshold-field");
+  const completeLinkageField = document.querySelector<any>(".complete-linkage-field");
+  const graphSimilarityField = document.querySelector<any>(".graph-similarity-field");
+  const pipelinePanel = document.querySelector<any>(".pipeline-panel");
+  const statsPanel = document.querySelector<any>(".stats-panel");
   const auditPanel = $("audit-panel");
   const locatePanel = $("locate-flow-panel");
-  const logPanel = document.querySelector(".log-panel");
-  const resultPanel = document.querySelector(".result-panel");
+  const logPanel = document.querySelector<any>(".log-panel");
+  const resultPanel = document.querySelector<any>(".result-panel");
   const reviewPanel = $("review-panel");
   const curationPanel = $("curation-panel");
   const lightbox = $("review-lightbox");
-  const languageSwitch = document.querySelector(".language-switch");
+  const languageSwitch = document.querySelector<any>(".language-switch");
   const healthBadge = $("health-badge");
 
   const shell = element("div", "forge-canvas-shell");
   const topbar = element("header", "canvas-topbar liquid-panel");
   const brand = element("div", "canvas-brand");
   const logo = document.createElement("img");
-  logo.src = "./loraforge-logo.png";
+  logo.src = window.LoRAForgeAssets?.logo || "./loraforge-logo.png";
   logo.alt = "LoRAForge";
   const brandCopy = element("div", "canvas-brand-copy");
   brandCopy.append(
@@ -589,7 +596,7 @@ function normalizeDependencies(changedOption) {
 }
 
 function updateNodeOptionUi() {
-  document.querySelectorAll("[data-node-option]").forEach((item) => {
+  document.querySelectorAll<any>("[data-node-option]").forEach((item) => {
     const option = item.dataset.nodeOption;
     if (!Object.hasOwn(nodeOptions, option)) return;
     const enabled = Boolean(nodeOptions[option]);
@@ -605,7 +612,7 @@ function updateNodeOptionUi() {
 
 function bindNodeToggles() {
   updateNodeOptionUi();
-  document.querySelectorAll(".node-switch:not(:disabled)").forEach((button) => {
+  document.querySelectorAll<any>(".node-switch:not(:disabled)").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       const option = button.dataset.nodeOption;
@@ -620,7 +627,7 @@ function bindNodeToggles() {
     "submit",
     (event) => {
       if (
-        event.target.id === "curation-submit-form"
+        (event.target as HTMLElement).id === "curation-submit-form"
         && (!nodeOptions.review || !nodeOptions.pixai)
       ) {
         event.preventDefault();
@@ -628,7 +635,7 @@ function bindNodeToggles() {
         showCanvasNotice("Review 或 PixAI 节点已关闭，无法进入标注阶段。");
       }
       if (
-        event.target.id === "standalone-pixai-form"
+        (event.target as HTMLElement).id === "standalone-pixai-form"
         && !nodeOptions.pixai
       ) {
         event.preventDefault();
@@ -636,7 +643,7 @@ function bindNodeToggles() {
         showCanvasNotice("PixAI 节点已关闭。");
       }
       if (
-        event.target.id === "curation-finalize-form"
+        (event.target as HTMLElement).id === "curation-finalize-form"
         && (!nodeOptions.selection || !nodeOptions.caption)
       ) {
         event.preventDefault();
@@ -722,11 +729,31 @@ function bindCanvasInteractions(viewport, world, edges) {
       if (!draggingNode || !dragOrigin) return;
       const deltaX = (event.clientX - dragOrigin.pointerX) / canvasScale;
       const deltaY = (event.clientY - dragOrigin.pointerY) / canvasScale;
-      draggingNode.style.left = `${dragOrigin.left + deltaX}px`;
-      draggingNode.style.top = `${dragOrigin.top + deltaY}px`;
-      drawEdges(edges);
+      pendingDragPosition = {
+        edges,
+        left: dragOrigin.left + deltaX,
+        node: draggingNode,
+        top: dragOrigin.top + deltaY,
+      };
+      if (!dragFrame) {
+        dragFrame = requestAnimationFrame(() => {
+          dragFrame = 0;
+          const pending = pendingDragPosition;
+          pendingDragPosition = null;
+          if (!pending?.node?.isConnected) return;
+          pending.node.style.left = `${pending.left}px`;
+          pending.node.style.top = `${pending.top}px`;
+          drawEdges(pending.edges);
+        });
+      }
     });
     header.addEventListener("pointerup", (event) => {
+      if (pendingDragPosition?.node?.isConnected) {
+        pendingDragPosition.node.style.left = `${pendingDragPosition.left}px`;
+        pendingDragPosition.node.style.top = `${pendingDragPosition.top}px`;
+        drawEdges(pendingDragPosition.edges);
+        pendingDragPosition = null;
+      }
       if (draggingNode) draggingNode.classList.remove("is-dragging");
       draggingNode = null;
       dragOrigin = null;
@@ -796,7 +823,7 @@ function bindToolbar(
 }
 
 function bindSidebar(logDrawer, logButton, focusExitButton) {
-  document.querySelectorAll("[data-canvas-section]").forEach((button) => {
+  document.querySelectorAll<any>("[data-canvas-section]").forEach((button) => {
     button.addEventListener("click", () => {
       toggleSectionFocus(button.dataset.canvasSection);
     });
@@ -837,12 +864,12 @@ function toggleSectionFocus(section) {
   focusedSection = section;
   const focusedIds = new Set(sectionGroups[section]);
   document.body.classList.add("canvas-section-focus");
-  document.querySelectorAll(".flow-node").forEach((node) => {
+  document.querySelectorAll<any>(".flow-node").forEach((node) => {
     const focused = focusedIds.has(node.id);
     node.classList.toggle("section-focus-target", focused);
     node.classList.toggle("section-focus-hidden", !focused);
   });
-  document.querySelectorAll("[data-canvas-section]").forEach((button) => {
+  document.querySelectorAll<any>("[data-canvas-section]").forEach((button) => {
     button.classList.toggle("active", button.dataset.canvasSection === section);
   });
   requestAnimationFrame(() => fitNodeGroup(sectionGroups[section], true));
@@ -852,10 +879,10 @@ function exitSectionFocus() {
   if (!focusedSection) return;
   focusedSection = null;
   document.body.classList.remove("canvas-section-focus");
-  document.querySelectorAll(".flow-node").forEach((node) => {
+  document.querySelectorAll<any>(".flow-node").forEach((node) => {
     node.classList.remove("section-focus-target", "section-focus-hidden");
   });
-  document.querySelectorAll("[data-canvas-section]").forEach((button) => {
+  document.querySelectorAll<any>("[data-canvas-section]").forEach((button) => {
     button.classList.remove("active");
   });
   if (savedCanvasView) {
@@ -901,16 +928,36 @@ function fitNodeGroup(ids, animate = true) {
 
 function bindLiquidHighlights() {
   document.addEventListener("pointermove", (event) => {
-    const control = event.target.closest(".liquid-control, .liquid-panel");
+    const control = (event.target as Element).closest(".liquid-control, .liquid-panel");
     if (!control) return;
-    const rect = control.getBoundingClientRect();
-    control.style.setProperty("--glass-x", `${event.clientX - rect.left}px`);
-    control.style.setProperty("--glass-y", `${event.clientY - rect.top}px`);
+    pendingHighlight = { control, x: event.clientX, y: event.clientY };
+    if (highlightFrame) return;
+    highlightFrame = requestAnimationFrame(() => {
+      highlightFrame = 0;
+      const pending = pendingHighlight;
+      pendingHighlight = null;
+      if (!pending?.control?.isConnected) return;
+      const rect = pending.control.getBoundingClientRect();
+      pending.control.style.setProperty("--glass-x", `${pending.x - rect.left}px`);
+      pending.control.style.setProperty("--glass-y", `${pending.y - rect.top}px`);
+    });
   });
 }
 
 function drawEdges(svg) {
   if (!svg) return;
+  pendingEdgeSvg = svg;
+  if (edgeFrame) return;
+  edgeFrame = requestAnimationFrame(() => {
+    edgeFrame = 0;
+    const nextSvg = pendingEdgeSvg;
+    pendingEdgeSvg = null;
+    renderEdges(nextSvg);
+  });
+}
+
+function ensureEdgeElements(svg) {
+  if (svg.dataset.edgesReady === "true") return;
   svg.replaceChildren();
   const marker = document.createElementNS("http://www.w3.org/2000/svg", "defs");
   marker.innerHTML = `
@@ -923,37 +970,65 @@ function drawEdges(svg) {
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#AEB7DA"/>
     </marker>`;
   svg.appendChild(marker);
-
   edgePairs.forEach(([sourceId, targetId], index) => {
-    const source = $(sourceId);
-    const target = $(targetId);
-    if (!source || !target) return;
-    const sourceEnabled = !source.classList.contains("node-disabled");
-    const targetEnabled = !target.classList.contains("node-disabled");
-    const x1 = source.offsetLeft + source.offsetWidth;
-    const y1 = source.offsetTop + Math.min(source.offsetHeight * 0.35, 110);
-    const x2 = target.offsetLeft;
-    const y2 = target.offsetTop + Math.min(target.offsetHeight * 0.35, 110);
-    const bend = Math.max(70, Math.abs(x2 - x1) * 0.42);
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
-    path.setAttribute("class", `canvas-edge ${sourceEnabled && targetEnabled ? "active" : "bypassed"}`);
+    path.dataset.edgeIndex = String(index);
+    path.dataset.sourceId = sourceId;
+    path.dataset.targetId = targetId;
+    path.setAttribute("class", "canvas-edge");
     path.setAttribute("marker-end", "url(#edge-arrow)");
     path.style.setProperty("--edge-delay", `${index * -0.17}s`);
     svg.appendChild(path);
   });
+  svg.dataset.edgesReady = "true";
+}
+
+function renderEdges(svg) {
+  if (!svg) return;
+  ensureEdgeElements(svg);
+  const geometry = edgePairs.map(([sourceId, targetId]) => {
+    const source = $(sourceId);
+    const target = $(targetId);
+    if (!source || !target) return null;
+    const x1 = source.offsetLeft + source.offsetWidth;
+    const y1 = source.offsetTop + Math.min(source.offsetHeight * 0.35, 110);
+    const x2 = target.offsetLeft;
+    const y2 = target.offsetTop + Math.min(target.offsetHeight * 0.35, 110);
+    return {
+      active: !source.classList.contains("node-disabled") && !target.classList.contains("node-disabled"),
+      bend: Math.max(70, Math.abs(x2 - x1) * 0.42),
+      x1,
+      x2,
+      y1,
+      y2,
+    };
+  });
+  svg.querySelectorAll(".canvas-edge[data-edge-index]").forEach((path) => {
+    const item = geometry[Number(path.dataset.edgeIndex)];
+    if (!item) return;
+    path.setAttribute(
+      "d",
+      `M ${item.x1} ${item.y1} C ${item.x1 + item.bend} ${item.y1}, ${item.x2 - item.bend} ${item.y2}, ${item.x2} ${item.y2}`,
+    );
+    path.setAttribute("class", `canvas-edge ${item.active ? "active" : "bypassed"}`);
+  });
 }
 
 function applyTransform() {
-  const world = $("canvas-world");
-  if (!world) return;
-  world.style.transform = `translate3d(${canvasX}px, ${canvasY}px, 0) scale(${canvasScale})`;
-  $("canvas-zoom-value").textContent = `${Math.round(canvasScale * 100)}%`;
+  if (transformFrame) return;
+  transformFrame = requestAnimationFrame(() => {
+    transformFrame = 0;
+    const world = $("canvas-world");
+    if (!world) return;
+    world.style.transform = `translate3d(${canvasX}px, ${canvasY}px, 0) scale(${canvasScale})`;
+    const zoom = `${Math.round(canvasScale * 100)}%`;
+    if ($("canvas-zoom-value").textContent !== zoom) $("canvas-zoom-value").textContent = zoom;
+  });
 }
 
 function fitCanvas(animate = true) {
   const viewport = $("canvas-viewport");
-  const nodes = [...document.querySelectorAll(".flow-node")];
+  const nodes = [...document.querySelectorAll<any>(".flow-node")];
   if (!viewport || !nodes.length) return;
   const minX = Math.min(...nodes.map((node) => node.offsetLeft));
   const minY = Math.min(...nodes.map((node) => node.offsetTop));
@@ -985,6 +1060,8 @@ function centerNode(id) {
   window.setTimeout(() => $("canvas-world").classList.remove("animate-transform"), 320);
 }
 
+let canvasNoticeTimer = 0;
+
 function showCanvasNotice(message) {
   let notice = $("canvas-notice");
   if (!notice) {
@@ -994,8 +1071,8 @@ function showCanvasNotice(message) {
   }
   notice.textContent = message;
   notice.classList.add("show");
-  window.clearTimeout(showCanvasNotice.timer);
-  showCanvasNotice.timer = window.setTimeout(() => notice.classList.remove("show"), 2800);
+  window.clearTimeout(canvasNoticeTimer);
+  canvasNoticeTimer = window.setTimeout(() => notice.classList.remove("show"), 2800);
 }
 
 window.LoRAForgeCanvas = {
@@ -1005,8 +1082,10 @@ window.LoRAForgeCanvas = {
 };
 
 try {
-  buildCanvas();
+buildCanvas();
 } catch (error) {
   finishCanvasBoot();
   throw error;
 }
+
+export {};

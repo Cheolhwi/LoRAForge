@@ -54,6 +54,21 @@ if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
     exit 1
 fi
 
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    echo "[ERROR] Node.js and npm are required to build the React frontend."
+    echo "        Install the current Node.js LTS release and run ./start_services.sh again."
+    exit 1
+fi
+
+echo "[INFO] Installing and building the React frontend..."
+if [[ ! -d "$PROJECT_ROOT/node_modules" ]] || [[ "$PROJECT_ROOT/package-lock.json" -nt "$PROJECT_ROOT/node_modules/.package-lock.json" ]]; then
+    npm ci || exit 1
+fi
+if ! npm run build; then
+    echo "[ERROR] React frontend build failed."
+    exit 1
+fi
+
 mkdir -p "$RUNTIME_DIR"
 export UV_CACHE_DIR="$PROJECT_ROOT/.uv-cache"
 export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"

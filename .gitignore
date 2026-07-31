@@ -1,6 +1,8 @@
 # Python environments, caches, and build output
 .venv/
 .uv-cache/
+node_modules/
+*.tsbuildinfo
 __pycache__/
 *.py[cod]
 .pytest_cache/

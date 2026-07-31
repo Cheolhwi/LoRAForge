@@ -1008,6 +1008,7 @@ def test_review_thumbnail_is_720p_cached_jpeg(monkeypatch, tmp_path):
         assert thumbnail.width <= 1280
         assert thumbnail.height <= 720
         assert thumbnail.size == (1280, 640)
+        assert not thumbnail.info.get("progressive", False)
 
 
 @pytest.mark.parametrize(

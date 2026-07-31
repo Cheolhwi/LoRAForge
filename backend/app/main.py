@@ -52,7 +52,10 @@ def _review_thumbnail_bytes(path: str, modified_ns: int, file_size: int) -> byte
             format="JPEG",
             quality=82,
             subsampling="4:2:0",
-            progressive=True,
+            # The frontend loads several review images in a small scroll window.
+            # Baseline JPEG avoids repeated progressive-scan paints while keeping
+            # the same 720p review resolution and visual quality.
+            progressive=False,
         )
     return buffer.getvalue()
 

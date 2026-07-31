@@ -1,8 +1,12 @@
+import { PipelineEventBatcher } from "./performance/pipelineEventBatcher";
+import { renderReviewGallery, unmountReviewGallery } from "./components/ReviewGallery";
+
 const API = window.AUTO_CAT_API || "http://127.0.0.1:8000/api";
 const UI_LANGUAGE = window.LoRAForgeI18n?.language || "zh";
 const translate = window.LoRAForgeI18n?.translate || ((value) => value);
 const REVIEW_REMOVE_CONFIRMATION_KEY = "loraforge-review-remove-confirmed-v1";
 const REVIEW_PAGE_SIZE = 50;
+const MAX_EVENT_LOG_ROWS = 300;
 let configuredClusterSimilarity = 0.90;
 let configuredGraphSimilarity = 0.65;
 let currentJob = null;
@@ -23,7 +27,8 @@ let reviewRemoveDialogResolve = null;
 let reviewRemoveDialogTrigger = null;
 let reviewRemovalConfirmationAcknowledged = false;
 let reviewPage = 0;
-let curationState = { status: "not_started", items: [] };
+let lastNodeSignature = "";
+let curationState: any = { status: "not_started", items: [] };
 let auditState = {
   jobId: null,
   clusters: [],
@@ -33,7 +38,7 @@ let auditState = {
   filter: "all",
 };
 
-const $ = (id) => document.getElementById(id);
+const $ = (id: string): any => document.getElementById(id);
 const stageNames = { scan: "去重/分辨率", embedding: "DINOv3", clustering: "聚簇", graph: "图筛选", locate: "Locate Anything", output: "输出", pixai: "PixAI 标注", caption: "选样与 Caption" };
 const locateNodeStates = ["pending", "running", "completed", "passed", "not-meet", "failed", "skipped"];
 const reasonLabels = {
@@ -42,8 +47,10 @@ const reasonLabels = {
 };
 
 function setStatus(element, text, state = "pending") {
+  const className = `status-pill ${state}`;
+  if (element.textContent === text && element.className === className) return;
   element.textContent = text;
-  element.className = `status-pill ${state}`;
+  element.className = className;
 }
 
 function updateSimilarityModelUi() {
@@ -110,7 +117,7 @@ function setDefaultMinimumPixels(value) {
   const minimumPixels = Number(value);
   if (!Number.isInteger(minimumPixels) || minimumPixels <= 0) return;
   const select = $("minimum-pixels");
-  let option = Array.from(select.options).find((item) => Number(item.value) === minimumPixels);
+  let option = Array.from<any>(select.options).find((item) => Number(item.value) === minimumPixels);
   if (!option) {
     option = document.createElement("option");
     option.value = String(minimumPixels);
@@ -122,8 +129,9 @@ function setDefaultMinimumPixels(value) {
 }
 
 function updateControlAvailability() {
+  document.body.classList.toggle("pipeline-running", jobRunning);
   $("start-button").disabled = jobRunning || pickerOpen || !$("source-dir").value;
-  document.querySelectorAll(".folder-select-button").forEach((button) => {
+  document.querySelectorAll<any>(".folder-select-button").forEach((button) => {
     button.disabled = jobRunning || pickerOpen;
   });
   $("clear-output-dir").disabled = jobRunning || pickerOpen || !$("output-dir").value;
@@ -206,14 +214,20 @@ function updateMetrics(data) {
       ? Number.isFinite(value)
       : typeof value === "string"
     );
-    if (element && isDisplayValue) element.textContent = String(value);
+    if (element && isDisplayValue) {
+      const nextValue = String(value);
+      if (element.textContent !== nextValue) element.textContent = nextValue;
+    }
   });
 }
 
 function updateNodes(stage, status) {
+  const signature = `${stage}:${status}`;
+  if (signature === lastNodeSignature) return;
+  lastNodeSignature = signature;
   const order = ["scan", "embedding", "clustering", "graph", "locate", "output"];
   const current = order.indexOf(stage);
-  document.querySelectorAll(".pipeline-node").forEach((node) => {
+  document.querySelectorAll<any>(".pipeline-node").forEach((node) => {
     const index = order.indexOf(node.dataset.stage);
     node.classList.remove("running", "completed", "failed");
     if (index < current || (index === current && status === "completed")) node.classList.add("completed");
@@ -240,11 +254,11 @@ function resetAudit() {
   $("audit-note").textContent = `${clusteringLabel} 只负责把图片分组，不会在此处删除图片。`;
   ["a", "b", "c", "d"].forEach((key) => { $(`audit-metric-${key}`).textContent = "—"; });
   $("audit-clusters").innerHTML = '<div class="audit-empty">等待 Complete-linkage 聚簇结果…</div>';
-  document.querySelectorAll(".audit-tab").forEach((button) => {
+  document.querySelectorAll<any>(".audit-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.auditView === "clustering");
     button.disabled = button.dataset.auditView === "graph";
   });
-  document.querySelectorAll(".audit-filters button").forEach((button) => {
+  document.querySelectorAll<any>(".audit-filters button").forEach((button) => {
     button.classList.toggle("active", button.dataset.auditFilter === "all");
     button.disabled = true;
   });
@@ -252,11 +266,11 @@ function resetAudit() {
 
 function renderAudit() {
   const isGraph = auditState.view === "graph";
-  document.querySelectorAll(".audit-tab").forEach((button) => {
+  document.querySelectorAll<any>(".audit-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.auditView === auditState.view);
     button.disabled = button.dataset.auditView === "graph" && !auditState.graph;
   });
-  document.querySelectorAll(".audit-filters button").forEach((button) => {
+  document.querySelectorAll<any>(".audit-filters button").forEach((button) => {
     button.disabled = !isGraph || !auditState.graph;
     button.classList.toggle("active", button.dataset.auditFilter === auditState.filter);
   });
@@ -413,7 +427,7 @@ function resetLocateFlow() {
 function renderDetectionBoxes() {
   const layer = $("locate-box-layer");
   layer.replaceChildren();
-  const groups = [
+  const groups: any[] = [
     ["watermark", "WATERMARK", locateFlowState.watermarkBoxes],
     ["comic", "COMIC", locateFlowState.comicBoxes],
   ];
@@ -587,7 +601,7 @@ function renderLocateFlow(flow) {
 
 function renderLocateFailure(message) {
   setStatus($("locate-live-status"), "检测中断", "failed");
-  const active = document.querySelector(".locate-node.running");
+  const active = document.querySelector<any>(".locate-node.running");
   if (active) setLocateNodeState(active.id, "failed");
   $("locate-decision-state").textContent = "检测服务异常";
   $("locate-decision-reason").textContent = message || "请检查后端日志";
@@ -610,6 +624,9 @@ function addLog(event) {
   timestamp.textContent = time;
   row.append(stage, detail, timestamp);
   log.appendChild(row);
+  while (log.childElementCount > MAX_EVENT_LOG_ROWS) {
+    log.firstElementChild?.remove();
+  }
   log.scrollTop = log.scrollHeight;
 }
 
@@ -629,6 +646,7 @@ function renderResults(items) {
 }
 
 function resetReview() {
+  unmountReviewGallery($("review-gallery"));
   reviewItems = [];
   reviewIndex = 0;
   reviewUndo = null;
@@ -636,9 +654,9 @@ function resetReview() {
   reviewLocked = false;
   reviewPage = 0;
   $("review-panel").hidden = true;
+  $("review-panel").classList.remove("has-review-images");
   $("review-notice").hidden = true;
   $("review-pagination").hidden = true;
-  $("review-gallery").replaceChildren();
   $("lora-prefix").value = "";
   $("lora-prefix").disabled = false;
   $("curation-submit").disabled = true;
@@ -663,88 +681,22 @@ function updateReviewPagination() {
   $("review-page-next").disabled = reviewPage >= totalPages - 1;
 }
 
-function createReviewCard(item, index, pageOffset) {
-  const sourceName = item.source.split(/[\\/]/).pop();
-  const card = document.createElement("article");
-  card.className = "review-card";
-
-  const thumb = document.createElement("div");
-  thumb.className = "review-thumb";
-  const image = document.createElement("img");
-  image.loading = pageOffset < 15 ? "eager" : "lazy";
-  image.decoding = "async";
-  image.fetchPriority = pageOffset < 10 ? "high" : "low";
-  image.width = 320;
-  image.height = 240;
-  const reviewUrl = `${API}/jobs/${encodeURIComponent(item.jobId)}/review/${item.manifestIndex}`;
-  image.src = reviewThumbnailsAvailable ? `${reviewUrl}/thumbnail` : reviewUrl;
-  if (reviewThumbnailsAvailable) {
-    image.addEventListener("error", () => {
-      if (image.dataset.originalFallback) return;
-      image.dataset.originalFallback = "1";
-      image.src = reviewUrl;
-    });
-  }
-  image.alt = sourceName;
-  const position = document.createElement("span");
-  const digits = Math.max(3, String(reviewItems.length).length);
-  position.className = "review-card-index";
-  position.textContent = `${String(index + 1).padStart(digits, "0")} / ${String(reviewItems.length).padStart(digits, "0")}`;
-  const role = document.createElement("span");
-  role.className = `review-card-role ${item.candidate_role === "backup_retry" ? "retry" : ""}`;
-  role.textContent = item.candidate_role === "backup_retry" ? "RETRY PASS" : "MEDOID";
-  thumb.append(image, position, role);
-
-  const caption = document.createElement("div");
-  caption.className = "review-card-caption";
-  const name = document.createElement("strong");
-  name.textContent = sourceName;
-  name.title = item.source;
-  const meta = document.createElement("span");
-  meta.textContent = `CLUSTER #${item.cluster_id} · ATTEMPT ${item.locate_attempt}`;
-  caption.append(name, meta);
-
-  const openButton = document.createElement("button");
-  openButton.type = "button";
-  openButton.className = "review-card-open";
-  openButton.setAttribute("aria-label", `查看图片 ${index + 1}：${sourceName}`);
-  openButton.append(thumb, caption);
-  openButton.addEventListener("click", () => openReviewImage(index, openButton));
-
-  const passed = document.createElement("button");
-  passed.type = "button";
-  passed.className = "review-card-pass";
-  passed.textContent = "✓";
-  passed.title = "点击移出候选集";
-  passed.setAttribute("aria-label", `将 ${sourceName} 移出候选集`);
-  passed.disabled = reviewLocked;
-  passed.addEventListener("click", () => removeReviewImageAt(index, passed));
-
-  card.append(openButton, passed);
-  return card;
-}
-
 function renderReviewPage(resetScroll = false) {
   const gallery = $("review-gallery");
   const previousScrollTop = resetScroll ? 0 : gallery.scrollTop;
-  gallery.replaceChildren();
   updateReviewPagination();
-
-  if (!reviewItems.length) {
-    const empty = document.createElement("div");
-    empty.className = "review-empty";
-    empty.textContent = "最终数据集为空";
-    gallery.appendChild(empty);
-    return;
-  }
-
   const start = reviewPage * REVIEW_PAGE_SIZE;
   const end = Math.min(start + REVIEW_PAGE_SIZE, reviewItems.length);
-  const fragment = document.createDocumentFragment();
-  for (let index = start; index < end; index += 1) {
-    fragment.appendChild(createReviewCard(reviewItems[index], index, index - start));
-  }
-  gallery.appendChild(fragment);
+  renderReviewGallery(gallery, {
+    apiBase: API,
+    items: reviewItems.slice(start, end),
+    locked: reviewLocked,
+    onOpen: openReviewImage,
+    onRemove: removeReviewImageAt,
+    startIndex: start,
+    thumbnailAvailable: reviewThumbnailsAvailable,
+    total: reviewItems.length,
+  });
   gallery.scrollTop = previousScrollTop;
 }
 
@@ -767,6 +719,7 @@ function renderReview(jobId, items) {
     .filter((item) => item.status === "passed" && item.output);
   reviewPage = jobChanged ? 0 : Math.min(reviewPage, reviewPageCount() - 1);
   $("review-panel").hidden = false;
+  $("review-panel").classList.toggle("has-review-images", reviewItems.length > 0);
   $("review-count").textContent = reviewItems.length;
   $("curation-submit").disabled = reviewLocked || !reviewItems.length;
   $("review-summary").textContent = reviewItems.length
@@ -787,7 +740,7 @@ function resetCuration() {
   $("curation-progress-message").textContent = "等待进入 PixAI 阶段";
   $("curation-finalize").disabled = true;
   setStatus($("curation-status"), "等待 Submit", "pending");
-  document.querySelectorAll(".curation-step").forEach((step) => {
+  document.querySelectorAll<any>(".curation-step").forEach((step) => {
     step.classList.remove("running", "completed", "failed");
   });
 }
@@ -797,16 +750,14 @@ function setReviewLocked(locked) {
   $("lora-prefix").disabled = locked;
   $("curation-submit").disabled = locked || !reviewItems.length;
   $("review-undo").disabled = locked;
-  document.querySelectorAll(".review-card-pass").forEach((button) => {
-    button.disabled = locked;
-  });
+  renderReviewPage(false);
   if (!$("review-lightbox").hidden) updateReviewImage();
 }
 
 function setCurationSteps(stage, status = "running") {
   const order = ["pixai", "selection", "caption"];
   const current = order.indexOf(stage);
-  document.querySelectorAll(".curation-step").forEach((step) => {
+  document.querySelectorAll<any>(".curation-step").forEach((step) => {
     const index = order.indexOf(step.dataset.curationStage);
     step.classList.remove("running", "completed", "failed");
     if (index < current) step.classList.add("completed");
@@ -1230,93 +1181,103 @@ async function checkHealth() {
   catch { setStatus($("health-badge"), "后端未连接", "failed"); }
 }
 
+function renderJobEvent(event, jobId) {
+  addLog(event);
+  const isCurationEvent = event.stage === "pixai" || event.stage === "caption";
+  const progress = `${Math.round(event.progress * 100)}%`;
+  if (isCurationEvent) {
+    $("curation-panel").hidden = false;
+    if ($("curation-progress-bar").style.width !== progress) $("curation-progress-bar").style.width = progress;
+    if ($("curation-progress-value").textContent !== progress) $("curation-progress-value").textContent = progress;
+    if ($("curation-progress-message").textContent !== event.message) $("curation-progress-message").textContent = event.message;
+    setCurationSteps(event.stage === "pixai" ? "pixai" : "caption", event.status);
+  } else {
+    updateNodes(event.stage, event.status);
+    if ($("progress-bar").style.width !== progress) $("progress-bar").style.width = progress;
+    if ($("progress-value").textContent !== progress) $("progress-value").textContent = progress;
+    if ($("progress-message").textContent !== event.message) $("progress-message").textContent = event.message;
+  }
+  updateMetrics(event.data || {});
+  if (event.data?.cluster_audit) updateMetrics(event.data.cluster_audit);
+  if (event.data?.cluster_audit) updateAudit(event.data.cluster_audit, event.job_id);
+  if (event.stage === "clustering" && event.status === "running") {
+    if (event.data?.similarity !== undefined) {
+      auditState.clusterSimilarity = event.data.similarity;
+    }
+    setStatus($("audit-status"), `${Number(auditState.clusterSimilarity).toFixed(2)} 聚簇中`, "running");
+  }
+  if (event.stage === "graph" && event.status === "running") {
+    const graphSimilarity = Number(event.data?.similarity);
+    if (Number.isFinite(graphSimilarity)) configuredGraphSimilarity = graphSimilarity;
+    setStatus(
+      $("audit-status"),
+      `${configuredGraphSimilarity.toFixed(2)} 图筛选中`,
+      "running",
+    );
+  }
+  if (event.data?.locate_flow) renderLocateFlow(event.data.locate_flow);
+  if (event.data?.curation_flow) renderCurationFlow(event.data.curation_flow, event.job_id);
+  if (event.stage === "locate" && event.status === "running" && !event.data?.locate_flow) {
+    setStatus($("locate-live-status"), "Locate 阶段已启动", "running");
+  }
+  if (event.status === "running" && !isCurationEvent) {
+    setStatus($("job-status"), `运行中 · ${stageNames[event.stage] || event.stage}`, "running");
+  }
+  if (event.status === "failed") {
+    if (isCurationEvent) {
+      setStatus($("curation-status"), `${stageNames[event.stage]}失败`, "failed");
+      jobRunning = false;
+      eventSource?.close();
+      currentJob = null;
+      updateControlAvailability();
+      loadCuration(jobId);
+      return;
+    }
+    setStatus($("job-status"), "任务失败", "failed");
+    if ($("locate-live-status").classList.contains("running") || event.stage === "locate") {
+      renderLocateFailure(event.data?.error || event.message);
+    }
+    jobRunning = false;
+    eventSource?.close();
+    currentJob = null;
+    updateControlAvailability();
+  }
+  if (event.status === "completed" && event.stage === "output") {
+    setStatus($("job-status"), "已完成", "completed");
+    jobRunning = false;
+    eventSource?.close();
+    currentJob = null;
+    updateControlAvailability();
+    loadManifest(jobId);
+  }
+  if (event.status === "completed" && event.stage === "pixai") {
+    eventSource?.close();
+    currentJob = null;
+    loadCuration(jobId);
+  }
+  if (event.status === "completed" && event.stage === "caption") {
+    jobRunning = false;
+    eventSource?.close();
+    currentJob = null;
+    updateControlAvailability();
+    loadCuration(jobId);
+  }
+}
+
+const jobEventBatcher = new PipelineEventBatcher(renderJobEvent);
+
 function listenToJob(jobId, startEventId = 0) {
   eventSource?.close();
+  jobEventBatcher.reset();
   lastEventId = startEventId;
   const eventUrl = `${API}/jobs/${encodeURIComponent(jobId)}/events?last_event_id=${startEventId}`;
   eventSource = new EventSource(eventUrl);
   eventSource.onmessage = (message) => {
     const event = JSON.parse(message.data);
-    const isCurationEvent = event.stage === "pixai" || event.stage === "caption";
     const eventId = Number(message.lastEventId || event.id || 0);
     if (eventId > 0 && eventId <= lastEventId) return;
     if (eventId > 0) lastEventId = eventId;
-    addLog(event);
-    if (isCurationEvent) {
-      $("curation-panel").hidden = false;
-      $("curation-progress-bar").style.width = `${Math.round(event.progress * 100)}%`;
-      $("curation-progress-value").textContent = `${Math.round(event.progress * 100)}%`;
-      $("curation-progress-message").textContent = event.message;
-      setCurationSteps(event.stage === "pixai" ? "pixai" : "caption", event.status);
-    } else {
-      updateNodes(event.stage, event.status);
-      $("progress-bar").style.width = `${Math.round(event.progress * 100)}%`;
-      $("progress-value").textContent = `${Math.round(event.progress * 100)}%`;
-      $("progress-message").textContent = event.message;
-    }
-    updateMetrics(event.data || {});
-    if (event.data?.cluster_audit) updateMetrics(event.data.cluster_audit);
-    if (event.data?.cluster_audit) updateAudit(event.data.cluster_audit, event.job_id);
-    if (event.stage === "clustering" && event.status === "running") {
-      if (event.data?.similarity !== undefined) {
-        auditState.clusterSimilarity = event.data.similarity;
-      }
-      setStatus($("audit-status"), `${Number(auditState.clusterSimilarity).toFixed(2)} 聚簇中`, "running");
-    }
-    if (event.stage === "graph" && event.status === "running") {
-      const graphSimilarity = Number(event.data?.similarity);
-      if (Number.isFinite(graphSimilarity)) configuredGraphSimilarity = graphSimilarity;
-      setStatus(
-        $("audit-status"),
-        `${configuredGraphSimilarity.toFixed(2)} 图筛选中`,
-        "running",
-      );
-    }
-    if (event.data?.locate_flow) renderLocateFlow(event.data.locate_flow);
-    if (event.data?.curation_flow) renderCurationFlow(event.data.curation_flow, event.job_id);
-    if (event.stage === "locate" && event.status === "running" && !event.data?.locate_flow) {
-      setStatus($("locate-live-status"), "Locate 阶段已启动", "running");
-    }
-    if (event.status === "running" && !isCurationEvent) setStatus($("job-status"), `运行中 · ${stageNames[event.stage] || event.stage}`, "running");
-    if (event.status === "failed") {
-      if (isCurationEvent) {
-        setStatus($("curation-status"), `${stageNames[event.stage]}失败`, "failed");
-        jobRunning = false;
-        eventSource?.close();
-        currentJob = null;
-        updateControlAvailability();
-        loadCuration(jobId);
-        return;
-      }
-      setStatus($("job-status"), "任务失败", "failed");
-      if ($("locate-live-status").classList.contains("running") || event.stage === "locate") {
-        renderLocateFailure(event.data?.error || event.message);
-      }
-      jobRunning = false;
-      eventSource?.close();
-      currentJob = null;
-      updateControlAvailability();
-    }
-    if (event.status === "completed" && event.stage === "output") {
-      setStatus($("job-status"), "已完成", "completed");
-      jobRunning = false;
-      eventSource?.close();
-      currentJob = null;
-      updateControlAvailability();
-      loadManifest(jobId);
-    }
-    if (event.status === "completed" && event.stage === "pixai") {
-      eventSource?.close();
-      currentJob = null;
-      loadCuration(jobId);
-    }
-    if (event.status === "completed" && event.stage === "caption") {
-      jobRunning = false;
-      eventSource?.close();
-      currentJob = null;
-      updateControlAvailability();
-      loadCuration(jobId);
-    }
+    jobEventBatcher.enqueue(event, jobId);
   };
   eventSource.onerror = () => {
     if (!currentJob) return;
@@ -1351,6 +1312,7 @@ async function loadManifest(jobId) {
   }
   $("review-panel").hidden = false;
   $("review-summary").textContent = "最终数据集读取失败，请查看任务日志";
+  unmountReviewGallery($("review-gallery"));
   $("review-gallery").innerHTML = '<div class="review-empty">无法加载最终数据集</div>';
 }
 
@@ -1374,7 +1336,7 @@ $("job-form").addEventListener("submit", async (event) => {
   resetAudit();
   resetLocateFlow();
   resetReview();
-  document.querySelectorAll(".pipeline-node").forEach((node) => node.classList.remove("running", "completed", "failed"));
+  document.querySelectorAll<any>(".pipeline-node").forEach((node) => node.classList.remove("running", "completed", "failed"));
   $("progress-bar").style.width = "0%";
   try {
     const response = await fetch(`${API}/jobs`, {
@@ -1568,12 +1530,12 @@ $("curation-finalize-form").addEventListener("submit", async (event) => {
 });
 
 $("source-dir").addEventListener("click", () => {
-  document.querySelector('[data-folder-target="source-dir"]').click();
+  document.querySelector<any>('[data-folder-target="source-dir"]').click();
 });
 $("output-dir").addEventListener("click", () => {
-  document.querySelector('[data-folder-target="output-dir"]').click();
+  document.querySelector<any>('[data-folder-target="output-dir"]').click();
 });
-document.querySelectorAll(".folder-select-button").forEach((button) => {
+document.querySelectorAll<any>(".folder-select-button").forEach((button) => {
   button.addEventListener("click", () => chooseFolder(button));
 });
 $("clear-output-dir").addEventListener("click", () => {
@@ -1611,7 +1573,7 @@ $("review-remove-dialog").addEventListener("click", (event) => {
 $("review-lightbox").addEventListener("click", (event) => {
   if (event.target === $("review-lightbox")) closeReviewImage();
 });
-document.querySelectorAll(".audit-tab").forEach((button) => {
+document.querySelectorAll<any>(".audit-tab").forEach((button) => {
   button.addEventListener("click", () => {
     auditState.view = button.dataset.auditView;
     if (auditState.view === "clustering") auditState.filter = "all";
@@ -1621,7 +1583,7 @@ document.querySelectorAll(".audit-tab").forEach((button) => {
     renderAudit();
   });
 });
-document.querySelectorAll(".audit-filters button").forEach((button) => {
+document.querySelectorAll<any>(".audit-filters button").forEach((button) => {
   button.addEventListener("click", () => {
     auditState.filter = button.dataset.auditFilter;
     renderAudit();
@@ -1645,3 +1607,5 @@ updateResolutionThresholdUi();
 updateFilteringThresholdUi();
 updateControlAvailability();
 checkHealth();
+
+export {};
