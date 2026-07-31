@@ -2,6 +2,7 @@ import { useLayoutEffect } from "react";
 
 import logoUrl from "../loraforge-logo.png";
 import PipelineShell from "./components/PipelineShell";
+import "@xyflow/react/dist/style.css";
 import "../styles.css";
 import "../canvas.css";
 

@@ -1414,7 +1414,7 @@ $("standalone-pixai-form").addEventListener("submit", async (event) => {
     $("lora-prefix").value = prefix;
     $("curation-description").textContent = `独立模式 · 已跳过视觉筛选 · ${payload.source_images} 张原图进入 PixAI。`;
     listenToJob(payload.job_id, payload.event_cursor);
-    $("curation-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    window.LoRAForgeCanvas?.centerNode?.("node-pixai");
   } catch (error) {
     currentJob = null;
     reviewJobId = null;
@@ -1460,7 +1460,7 @@ $("curation-submit-form").addEventListener("submit", async (event) => {
     currentJob = { job_id: reviewJobId };
     updateControlAvailability();
     listenToJob(reviewJobId, payload.event_cursor);
-    $("curation-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    window.LoRAForgeCanvas?.centerNode?.("node-pixai");
   } catch (error) {
     showReviewNotice(`Submit 失败：${error.message}`, false);
     setReviewLocked(false);

@@ -624,54 +624,8 @@ button {
   pointer-events: none;
 }
 
-.canvas-viewport.is-panning {
-  cursor: grabbing;
-}
-
 .canvas-viewport:active {
   user-select: none;
-}
-
-.canvas-world {
-  position: absolute;
-  width: 2800px;
-  height: 1800px;
-  transform-origin: 0 0;
-  will-change: transform;
-}
-
-.canvas-world.animate-transform {
-  transition: transform 320ms cubic-bezier(0.2, 0.82, 0.25, 1);
-}
-
-.canvas-edges {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.canvas-edge {
-  fill: none;
-  stroke: url("#edge-gradient");
-  stroke-linecap: round;
-  stroke-width: 3;
-  filter: drop-shadow(0 2px 4px rgba(91, 120, 212, 0.2));
-  opacity: 0.7;
-  vector-effect: non-scaling-stroke;
-}
-
-.canvas-edge.active {
-  animation: edge-flow 2.8s linear infinite;
-  stroke-dasharray: 5 8;
-  animation-delay: var(--edge-delay);
-}
-
-.canvas-edge.bypassed {
-  stroke: rgba(131, 148, 180, 0.46);
-  stroke-dasharray: 3 8;
-  opacity: 0.5;
 }
 
 @keyframes edge-flow {
@@ -4108,4 +4062,87 @@ button {
 .pipeline-running .liquid-control {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+
+/* React Flow owns viewport transforms, node positioning and edge routing. */
+.canvas-viewport > .react-flow {
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.canvas-viewport .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+.canvas-viewport .react-flow__viewport {
+  will-change: transform;
+}
+
+.canvas-viewport .react-flow__node {
+  padding: 0;
+  border: 0;
+  border-radius: 25px;
+  background: transparent;
+  color: inherit;
+}
+
+.canvas-viewport .react-flow__node.dragging {
+  z-index: 20 !important;
+}
+
+.legacy-node-host,
+.legacy-node-mount {
+  width: 100%;
+}
+
+.canvas-viewport .react-flow__node .flow-node {
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  width: 100% !important;
+}
+
+.canvas-viewport .react-flow__handle {
+  top: 102px;
+  width: 2px;
+  min-width: 2px;
+  height: 2px;
+  min-height: 2px;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.canvas-viewport .react-flow__edge.canvas-edge .react-flow__edge-path {
+  fill: none;
+  stroke: #aeb7da;
+  stroke-linecap: round;
+  stroke-width: 3;
+  filter: drop-shadow(0 2px 4px rgba(105, 115, 161, 0.14));
+  opacity: 0.72;
+  vector-effect: non-scaling-stroke;
+}
+
+.canvas-viewport .react-flow__edge.canvas-edge.active .react-flow__edge-path {
+  animation: edge-flow 2.8s linear infinite;
+  animation-delay: var(--edge-delay);
+  stroke-dasharray: 5 8;
+}
+
+.canvas-viewport .react-flow__edge.canvas-edge.bypassed .react-flow__edge-path {
+  stroke: rgba(122, 130, 153, 0.4);
+  stroke-dasharray: 3 8;
+  opacity: 0.5;
+}
+
+.canvas-section-focus .react-flow__edge {
+  opacity: 0;
+}
+
+.canvas-section-focus .react-flow__node #node-clustering.section-focus-target,
+.canvas-section-focus .react-flow__node #node-locate.section-focus-target,
+.canvas-section-focus .react-flow__node #review-panel.section-focus-target {
+  width: 100% !important;
 }

@@ -103,7 +103,7 @@ PixAI Tagger 为每张图片生成 general tags，并派生三个选样维度：
 
 - Apple Silicon Mac（M1 或更新型号），使用原生 arm64 环境。
 - macOS 14 或更新版本。
-- 当前 Node.js LTS 与 npm，用于构建 TypeScript + React 前端。
+- 当前 Node.js LTS 与 npm，用于构建 TypeScript + React + React Flow 前端。
 - 能够访问 Hugging Face 模型仓库。
 - 足够的磁盘空间保存 Python 环境和模型文件。
 - 建议至少 16 GB 统一内存；24 GB 或更多更适合同时运行全部模型。
@@ -143,7 +143,7 @@ chmod +x start_services.sh stop_services.sh
 ./start_services.sh
 ```
 
-启动脚本会确认当前环境是 Apple Silicon，安装并构建 TypeScript + React 前端，自动准备 `uv`、原生 arm64 Python 3.11、项目依赖和模型文件，验证 MLX、MPS 与 CoreML，然后启动：
+启动脚本会确认当前环境是 Apple Silicon，安装并构建 TypeScript + React + React Flow 前端，自动准备 `uv`、原生 arm64 Python 3.11、项目依赖和模型文件，验证 MLX、MPS 与 CoreML，然后启动：
 
 - 前端：[http://127.0.0.1:5173](http://127.0.0.1:5173)
 - 后端：[http://127.0.0.1:8000](http://127.0.0.1:8000)

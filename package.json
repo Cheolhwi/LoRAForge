@@ -9,6 +9,7 @@
     "test:frontend": "vitest run --config frontend/vitest.config.ts"
   },
   "dependencies": {
+    "@xyflow/react": "^12.11.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

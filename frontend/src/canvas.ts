@@ -1,3 +1,11 @@
+import {
+  mountReactFlowCanvas,
+  NODE_OPTIONS_CHANGED_EVENT,
+  type FlowCanvasController,
+  type FlowEdgeDefinition,
+  type FlowNodeDefinition,
+} from "./components/FlowCanvas";
+
 const $ = (id: string): any => document.getElementById(id);
 
 const optionDefaults = {
@@ -28,8 +36,8 @@ if (!nodeOptions.embedding) {
   nodeOptions.graph_filter = false;
 }
 if (!nodeOptions.locate) nodeOptions.retry = false;
-const nodeRegistry = new Map();
-const edgePairs = [
+const flowNodeDefinitions: FlowNodeDefinition[] = [];
+const edgePairs: FlowEdgeDefinition[] = [
   ["node-input", "node-scan"],
   ["node-scan", "node-resolution"],
   ["node-resolution", "node-embedding"],
@@ -44,24 +52,13 @@ const edgePairs = [
   ["node-caption", "node-output"],
 ];
 
-let canvasScale = 0.62;
-let canvasX = 24;
-let canvasY = 28;
-let panning = false;
-let panOrigin = null;
-let draggingNode = null;
-let dragOrigin = null;
 let focusedSection = null;
 let savedCanvasView = null;
 let directPixaiMode = localStorage.getItem("loraforge-direct-pixai") === "true";
 let syncToolbarRunState = () => {};
-let transformFrame = 0;
-let edgeFrame = 0;
-let pendingEdgeSvg = null;
-let dragFrame = 0;
-let pendingDragPosition = null;
 let highlightFrame = 0;
 let pendingHighlight = null;
+let flowCanvas: FlowCanvasController | null = null;
 
 const sectionGroups = {
   clustering: ["node-clustering"],
@@ -164,7 +161,13 @@ function makeNode({
   node.appendChild(nodeHeader(index, title, subtitle, option, locked));
   const body = element("div", "flow-node-body");
   node.appendChild(body);
-  nodeRegistry.set(id, node);
+  flowNodeDefinitions.push({
+    element: node,
+    id,
+    option,
+    position: { x, y },
+    width,
+  });
   return { node, body };
 }
 
@@ -313,16 +316,6 @@ function buildCanvas() {
 
   const viewport = element("main", "canvas-viewport");
   viewport.id = "canvas-viewport";
-  const world = element("div", "canvas-world");
-  world.id = "canvas-world";
-  const edges = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  edges.id = "canvas-edges";
-  edges.classList.add("canvas-edges");
-  edges.setAttribute("width", "2800");
-  edges.setAttribute("height", "1800");
-  edges.setAttribute("viewBox", "0 0 2800 1800");
-  world.appendChild(edges);
-  viewport.appendChild(world);
 
   const inspector = element("aside", "canvas-inspector liquid-panel");
   const inspectorHeader = element("div", "inspector-header");
@@ -468,11 +461,16 @@ function buildCanvas() {
   reviewPanel.style.width = "720px";
   reviewPanel.prepend(nodeHeader("07", "Review 复核", "默认通过 · 可移出", "review"));
   reviewPanel.hidden = false;
-  nodeRegistry.set("review-panel", reviewPanel);
+  flowNodeDefinitions.push({
+    element: reviewPanel,
+    id: "review-panel",
+    option: "review",
+    position: { x: 100, y: 920 },
+    width: 720,
+  });
 
   curationPanel.classList.add("canvas-curation-root");
   curationPanel.hidden = false;
-  world.appendChild(curationPanel);
 
   const pixai = makeNode({
     id: "node-pixai", index: "08", title: "PixAI 标注",
@@ -507,7 +505,12 @@ function buildCanvas() {
   });
   caption.body.appendChild(captionConfig);
   targetForm.classList.add("canvas-split-form");
-  targetForm.replaceChildren(selection.node, caption.node);
+  [targetGrid, captionConfig].forEach((container) => {
+    container.querySelectorAll("input, select, textarea, button").forEach((control) => {
+      control.setAttribute("form", "curation-finalize-form");
+    });
+  });
+  targetForm.replaceChildren();
   curationConfig.replaceChildren(targetForm);
 
   const output = makeNode({
@@ -518,43 +521,36 @@ function buildCanvas() {
   const completed = $("curation-completed");
   output.body.append(resultPanel, completed);
 
-  [
-    input.node,
-    scan.node,
-    resolution.node,
-    embedding.node,
-    clustering.node,
-    graph.node,
-    locate.node,
-    retry.node,
-    reviewPanel,
-    pixai.node,
-    curationConfig,
-    output.node,
-  ].forEach((node) => world.appendChild(node));
+  curationPanel.replaceChildren(curationConfig);
+  shell.appendChild(curationPanel);
+  flowCanvas = mountReactFlowCanvas(
+    viewport,
+    flowNodeDefinitions,
+    edgePairs,
+    nodeOptions,
+    () => {
+      bindNodeToggles();
+      bindToolbar(
+        runButton,
+        fitButton,
+        zoomOut,
+        zoomIn,
+        moduleSwitch,
+      );
+      applyDirectPixaiMode(moduleSwitch, runButton);
+      requestAnimationFrame(() => {
+        flowCanvas?.fit(false);
+        finishCanvasBoot();
+      });
+    },
+  );
 
   if (lightbox) document.body.appendChild(lightbox);
   oldShell.remove();
   document.body.classList.add("canvas-ready");
 
-  bindCanvasInteractions(viewport, world, edges);
-  bindNodeToggles();
-  bindToolbar(
-    runButton,
-    fitButton,
-    zoomOut,
-    zoomIn,
-    moduleSwitch,
-  );
   bindSidebar(logDrawer, logButton, focusExitButton);
   bindLiquidHighlights();
-  applyDirectPixaiMode(moduleSwitch, runButton);
-  drawEdges(edges);
-  applyTransform();
-  requestAnimationFrame(() => {
-    fitCanvas(false);
-    requestAnimationFrame(finishCanvasBoot);
-  });
 }
 
 function finishCanvasBoot() {
@@ -619,7 +615,9 @@ function bindNodeToggles() {
       nodeOptions[option] = !nodeOptions[option];
       normalizeDependencies(option);
       updateNodeOptionUi();
-      drawEdges($("canvas-edges"));
+      window.dispatchEvent(new CustomEvent(NODE_OPTIONS_CHANGED_EVENT, {
+        detail: { ...nodeOptions },
+      }));
     });
   });
 
@@ -655,129 +653,6 @@ function bindNodeToggles() {
   );
 }
 
-function bindCanvasInteractions(viewport, world, edges) {
-  viewport.addEventListener(
-    "wheel",
-    (event) => {
-      if (findScrollableAncestor(event.target, viewport)) return;
-      event.preventDefault();
-      const rect = viewport.getBoundingClientRect();
-      const pointerX = event.clientX - rect.left;
-      const pointerY = event.clientY - rect.top;
-      const worldX = (pointerX - canvasX) / canvasScale;
-      const worldY = (pointerY - canvasY) / canvasScale;
-      const factor = event.deltaY < 0 ? 1.08 : 0.92;
-      canvasScale = Math.min(1.35, Math.max(0.32, canvasScale * factor));
-      canvasX = pointerX - worldX * canvasScale;
-      canvasY = pointerY - worldY * canvasScale;
-      applyTransform();
-    },
-    { passive: false },
-  );
-
-  viewport.addEventListener("pointerdown", (event) => {
-    const isMiddlePan = event.button === 1;
-    const isBlankLeftPan = (
-      event.button === 0
-      && !event.target.closest(".flow-node, button, input, select, textarea")
-    );
-    if (!isMiddlePan && !isBlankLeftPan) {
-      return;
-    }
-    event.preventDefault();
-    panning = true;
-    panOrigin = { x: event.clientX - canvasX, y: event.clientY - canvasY };
-    viewport.setPointerCapture(event.pointerId);
-    viewport.classList.add("is-panning");
-  });
-
-  viewport.addEventListener("auxclick", (event) => {
-    if (event.button === 1) event.preventDefault();
-  });
-
-  viewport.addEventListener("pointermove", (event) => {
-    if (!panning || !panOrigin) return;
-    canvasX = event.clientX - panOrigin.x;
-    canvasY = event.clientY - panOrigin.y;
-    applyTransform();
-  });
-
-  viewport.addEventListener("pointerup", (event) => {
-    panning = false;
-    panOrigin = null;
-    viewport.classList.remove("is-panning");
-    if (viewport.hasPointerCapture(event.pointerId)) {
-      viewport.releasePointerCapture(event.pointerId);
-    }
-  });
-
-  world.querySelectorAll(".flow-node-header").forEach((header) => {
-    header.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || event.target.closest("button, input, select, textarea")) return;
-      const node = header.closest(".flow-node");
-      draggingNode = node;
-      dragOrigin = {
-        pointerX: event.clientX,
-        pointerY: event.clientY,
-        left: Number.parseFloat(node.style.left || "0"),
-        top: Number.parseFloat(node.style.top || "0"),
-      };
-      header.setPointerCapture(event.pointerId);
-      node.classList.add("is-dragging");
-    });
-    header.addEventListener("pointermove", (event) => {
-      if (!draggingNode || !dragOrigin) return;
-      const deltaX = (event.clientX - dragOrigin.pointerX) / canvasScale;
-      const deltaY = (event.clientY - dragOrigin.pointerY) / canvasScale;
-      pendingDragPosition = {
-        edges,
-        left: dragOrigin.left + deltaX,
-        node: draggingNode,
-        top: dragOrigin.top + deltaY,
-      };
-      if (!dragFrame) {
-        dragFrame = requestAnimationFrame(() => {
-          dragFrame = 0;
-          const pending = pendingDragPosition;
-          pendingDragPosition = null;
-          if (!pending?.node?.isConnected) return;
-          pending.node.style.left = `${pending.left}px`;
-          pending.node.style.top = `${pending.top}px`;
-          drawEdges(pending.edges);
-        });
-      }
-    });
-    header.addEventListener("pointerup", (event) => {
-      if (pendingDragPosition?.node?.isConnected) {
-        pendingDragPosition.node.style.left = `${pendingDragPosition.left}px`;
-        pendingDragPosition.node.style.top = `${pendingDragPosition.top}px`;
-        drawEdges(pendingDragPosition.edges);
-        pendingDragPosition = null;
-      }
-      if (draggingNode) draggingNode.classList.remove("is-dragging");
-      draggingNode = null;
-      dragOrigin = null;
-      if (header.hasPointerCapture(event.pointerId)) {
-        header.releasePointerCapture(event.pointerId);
-      }
-    });
-  });
-}
-
-function findScrollableAncestor(target, boundary) {
-  let current = target instanceof Element ? target : target?.parentElement;
-  while (current && current !== boundary) {
-    const style = window.getComputedStyle(current);
-    const scrollsVertically = (
-      /auto|scroll/.test(style.overflowY)
-      && current.scrollHeight > current.clientHeight + 2
-    );
-    if (scrollsVertically) return current;
-    current = current.parentElement;
-  }
-  return null;
-}
-
 function bindToolbar(
   runButton,
   fitButton,
@@ -793,16 +668,10 @@ function bindToolbar(
   });
   fitButton.addEventListener("click", () => {
     if (focusedSection) fitNodeGroup(sectionGroups[focusedSection], true);
-    else fitCanvas(true);
+    else flowCanvas?.fit(true);
   });
-  zoomOut.addEventListener("click", () => {
-    canvasScale = Math.max(0.32, canvasScale - 0.08);
-    applyTransform();
-  });
-  zoomIn.addEventListener("click", () => {
-    canvasScale = Math.min(1.35, canvasScale + 0.08);
-    applyTransform();
-  });
+  zoomOut.addEventListener("click", () => flowCanvas?.zoomOut());
+  zoomIn.addEventListener("click", () => flowCanvas?.zoomIn());
   moduleSwitch.addEventListener("click", () => {
     directPixaiMode = !directPixaiMode;
     applyDirectPixaiMode(moduleSwitch, runButton);
@@ -854,13 +723,7 @@ function toggleSectionFocus(section) {
     exitSectionFocus();
     return;
   }
-  if (!focusedSection) {
-    savedCanvasView = {
-      x: canvasX,
-      y: canvasY,
-      scale: canvasScale,
-    };
-  }
+  if (!focusedSection) savedCanvasView = flowCanvas?.getViewport();
   focusedSection = section;
   const focusedIds = new Set(sectionGroups[section]);
   document.body.classList.add("canvas-section-focus");
@@ -886,44 +749,13 @@ function exitSectionFocus() {
     button.classList.remove("active");
   });
   if (savedCanvasView) {
-    canvasX = savedCanvasView.x;
-    canvasY = savedCanvasView.y;
-    canvasScale = savedCanvasView.scale;
-    $("canvas-world").classList.add("animate-transform");
-    applyTransform();
-    window.setTimeout(
-      () => $("canvas-world").classList.remove("animate-transform"),
-      320,
-    );
+    flowCanvas?.setViewport(savedCanvasView, true);
   }
   savedCanvasView = null;
 }
 
 function fitNodeGroup(ids, animate = true) {
-  const viewport = $("canvas-viewport");
-  const nodes = ids.map((id) => $(id)).filter(Boolean);
-  if (!viewport || !nodes.length) return;
-  const minX = Math.min(...nodes.map((node) => node.offsetLeft));
-  const minY = Math.min(...nodes.map((node) => node.offsetTop));
-  const maxX = Math.max(...nodes.map((node) => node.offsetLeft + node.offsetWidth));
-  const maxY = Math.max(...nodes.map((node) => node.offsetTop + node.offsetHeight));
-  const rect = viewport.getBoundingClientRect();
-  canvasScale = Math.min(
-    1.18,
-    Math.max(
-      0.42,
-      Math.min(
-        (rect.width - 150) / Math.max(maxX - minX, 1),
-        (rect.height - 110) / Math.max(maxY - minY, 1),
-      ),
-    ),
-  );
-  canvasX = (rect.width - (maxX - minX) * canvasScale) / 2 - minX * canvasScale;
-  canvasY = (rect.height - (maxY - minY) * canvasScale) / 2 - minY * canvasScale;
-  const world = $("canvas-world");
-  world.classList.toggle("animate-transform", animate);
-  applyTransform();
-  window.setTimeout(() => world.classList.remove("animate-transform"), 320);
+  flowCanvas?.fitNodes(ids, animate);
 }
 
 function bindLiquidHighlights() {
@@ -944,120 +776,8 @@ function bindLiquidHighlights() {
   });
 }
 
-function drawEdges(svg) {
-  if (!svg) return;
-  pendingEdgeSvg = svg;
-  if (edgeFrame) return;
-  edgeFrame = requestAnimationFrame(() => {
-    edgeFrame = 0;
-    const nextSvg = pendingEdgeSvg;
-    pendingEdgeSvg = null;
-    renderEdges(nextSvg);
-  });
-}
-
-function ensureEdgeElements(svg) {
-  if (svg.dataset.edgesReady === "true") return;
-  svg.replaceChildren();
-  const marker = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-  marker.innerHTML = `
-    <linearGradient id="edge-gradient" x1="0" x2="1">
-      <stop offset="0" stop-color="#CDD3E9"/>
-      <stop offset="1" stop-color="#AEB7DA"/>
-    </linearGradient>
-    <marker id="edge-arrow" viewBox="0 0 10 10" refX="8" refY="5"
-      markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#AEB7DA"/>
-    </marker>`;
-  svg.appendChild(marker);
-  edgePairs.forEach(([sourceId, targetId], index) => {
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.dataset.edgeIndex = String(index);
-    path.dataset.sourceId = sourceId;
-    path.dataset.targetId = targetId;
-    path.setAttribute("class", "canvas-edge");
-    path.setAttribute("marker-end", "url(#edge-arrow)");
-    path.style.setProperty("--edge-delay", `${index * -0.17}s`);
-    svg.appendChild(path);
-  });
-  svg.dataset.edgesReady = "true";
-}
-
-function renderEdges(svg) {
-  if (!svg) return;
-  ensureEdgeElements(svg);
-  const geometry = edgePairs.map(([sourceId, targetId]) => {
-    const source = $(sourceId);
-    const target = $(targetId);
-    if (!source || !target) return null;
-    const x1 = source.offsetLeft + source.offsetWidth;
-    const y1 = source.offsetTop + Math.min(source.offsetHeight * 0.35, 110);
-    const x2 = target.offsetLeft;
-    const y2 = target.offsetTop + Math.min(target.offsetHeight * 0.35, 110);
-    return {
-      active: !source.classList.contains("node-disabled") && !target.classList.contains("node-disabled"),
-      bend: Math.max(70, Math.abs(x2 - x1) * 0.42),
-      x1,
-      x2,
-      y1,
-      y2,
-    };
-  });
-  svg.querySelectorAll(".canvas-edge[data-edge-index]").forEach((path) => {
-    const item = geometry[Number(path.dataset.edgeIndex)];
-    if (!item) return;
-    path.setAttribute(
-      "d",
-      `M ${item.x1} ${item.y1} C ${item.x1 + item.bend} ${item.y1}, ${item.x2 - item.bend} ${item.y2}, ${item.x2} ${item.y2}`,
-    );
-    path.setAttribute("class", `canvas-edge ${item.active ? "active" : "bypassed"}`);
-  });
-}
-
-function applyTransform() {
-  if (transformFrame) return;
-  transformFrame = requestAnimationFrame(() => {
-    transformFrame = 0;
-    const world = $("canvas-world");
-    if (!world) return;
-    world.style.transform = `translate3d(${canvasX}px, ${canvasY}px, 0) scale(${canvasScale})`;
-    const zoom = `${Math.round(canvasScale * 100)}%`;
-    if ($("canvas-zoom-value").textContent !== zoom) $("canvas-zoom-value").textContent = zoom;
-  });
-}
-
-function fitCanvas(animate = true) {
-  const viewport = $("canvas-viewport");
-  const nodes = [...document.querySelectorAll<any>(".flow-node")];
-  if (!viewport || !nodes.length) return;
-  const minX = Math.min(...nodes.map((node) => node.offsetLeft));
-  const minY = Math.min(...nodes.map((node) => node.offsetTop));
-  const maxX = Math.max(...nodes.map((node) => node.offsetLeft + node.offsetWidth));
-  const maxY = Math.max(...nodes.map((node) => node.offsetTop + node.offsetHeight));
-  const rect = viewport.getBoundingClientRect();
-  canvasScale = Math.min(
-    0.78,
-    Math.max(0.32, Math.min((rect.width - 120) / (maxX - minX), (rect.height - 100) / (maxY - minY))),
-  );
-  canvasX = (rect.width - (maxX - minX) * canvasScale) / 2 - minX * canvasScale;
-  canvasY = (rect.height - (maxY - minY) * canvasScale) / 2 - minY * canvasScale;
-  const world = $("canvas-world");
-  world.classList.toggle("animate-transform", animate);
-  applyTransform();
-  window.setTimeout(() => world.classList.remove("animate-transform"), 320);
-}
-
 function centerNode(id) {
-  const node = $(id);
-  const viewport = $("canvas-viewport");
-  if (!node || !viewport) return;
-  const rect = viewport.getBoundingClientRect();
-  canvasScale = Math.max(canvasScale, 0.72);
-  canvasX = rect.width / 2 - (node.offsetLeft + node.offsetWidth / 2) * canvasScale;
-  canvasY = rect.height / 2 - (node.offsetTop + node.offsetHeight / 2) * canvasScale;
-  $("canvas-world").classList.add("animate-transform");
-  applyTransform();
-  window.setTimeout(() => $("canvas-world").classList.remove("animate-transform"), 320);
+  flowCanvas?.centerNode(id);
 }
 
 let canvasNoticeTimer = 0;
@@ -1077,12 +797,12 @@ function showCanvasNotice(message) {
 
 window.LoRAForgeCanvas = {
   getPipelineOptions,
-  fit: () => fitCanvas(true),
+  fit: () => flowCanvas?.fit(true),
   centerNode,
 };
 
 try {
-buildCanvas();
+  buildCanvas();
 } catch (error) {
   finishCanvasBoot();
   throw error;
