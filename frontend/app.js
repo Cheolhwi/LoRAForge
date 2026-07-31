@@ -155,7 +155,7 @@ async function chooseFolder(button) {
   pickerOpen = true;
   updateControlAvailability();
   button.textContent = "等待选择…";
-  $("progress-message").textContent = "请在弹出的 Windows 窗口中选择文件夹";
+  $("progress-message").textContent = "请在弹出的系统窗口中选择文件夹";
   try {
     const response = await fetch(
       `${API}/folders/select?purpose=${encodeURIComponent(purpose)}&locale=${encodeURIComponent(UI_LANGUAGE)}`,

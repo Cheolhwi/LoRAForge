@@ -13,6 +13,7 @@ from app.config import Settings
 from app.jobs import JobManager, JobState, _json_safe
 from app.pipeline import caption_rules as caption_rules_module
 from app.pipeline import engine as engine_module
+from app.pipeline import scan as scan_module
 from app.pipeline.caption_rules import (
     CaptionRuleData,
     build_caption_result,
@@ -456,8 +457,7 @@ def test_caption_aliases_selection_injections_and_updates_protected_tags():
     assert "portrait" not in result.tags
     assert "torso_view" not in result.tags
     assert any(
-        entry["reason"] == "selection_override"
-        and entry["tag"] == "torso_view"
+        entry["reason"] == "selection_override" and entry["tag"] == "torso_view"
         for entry in result.audit_log
     )
 
@@ -490,9 +490,7 @@ def test_selection_override_removes_stale_structural_aliases_before_aliasing():
 
     assert "2girls" in result.tags
     assert "upper_body" in result.tags
-    assert not {"legacy_1girl", "1girl", "legacy_full_body", "full_body"} & set(
-        result.tags
-    )
+    assert not {"legacy_1girl", "1girl", "legacy_full_body", "full_body"} & set(result.tags)
 
 
 def test_selection_override_removes_singular_people_tags_when_switching_to_group():
@@ -570,8 +568,7 @@ def test_caption_rules_remove_ambiguous_single_person_eye_colors_but_keep_multi_
     assert not {"brown_eyes", "black_eyes"} & set(single_result.tags)
     assert {"brown_eyes", "black_eyes"} <= set(multi_result.tags)
     assert any(
-        entry["reason"] == "exclusive_ambiguous"
-        and entry["tag"] in {"brown_eyes", "black_eyes"}
+        entry["reason"] == "exclusive_ambiguous" and entry["tag"] in {"brown_eyes", "black_eyes"}
         for entry in single_result.audit_log
     )
 
@@ -756,9 +753,7 @@ def test_caption_rules_only_remove_text_tags_when_enabled():
     assert {"text", "speech_bubble"} <= set(default_result.tags)
     assert not {"text", "speech_bubble"} & set(strict_result.tags)
     assert {
-        entry["tag"]
-        for entry in strict_result.audit_log
-        if entry["reason"] == "denylisted"
+        entry["tag"] for entry in strict_result.audit_log if entry["reason"] == "denylisted"
     } >= {"text", "speech_bubble"}
 
 
@@ -827,9 +822,7 @@ def test_curation_pipeline_writes_metadata_images_and_captions(monkeypatch, tmp_
     assert caption_path.read_text(encoding="utf-8").startswith("artist_style, ")
     assert (training_dir / "selection_report.json").is_file()
     metadata = json.loads((output_dir / "pixai_tags.json").read_text(encoding="utf-8"))
-    selected_metadata = next(
-        item for item in metadata["items"] if item["selection"]["selected"]
-    )
+    selected_metadata = next(item for item in metadata["items"] if item["selection"]["selected"])
     assert isinstance(selected_metadata["caption_tags"], list)
     assert isinstance(selected_metadata["caption_audit"], list)
     parent_policy = metadata["selection_report"]["caption_policy"]["parent_rules"]
@@ -856,12 +849,8 @@ def test_curation_pipeline_writes_metadata_images_and_captions(monkeypatch, tmp_
     loaded_parent_rules = load_pixai_parent_rules(str(parent_rules_path), strict=True)
     expected_relation_count = loaded_parent_rules.parent_relation_count
     assert parent_policy["general_tag_count"] == 9741
-    assert parent_policy["direct_relation_count"] == (
-        loaded_parent_rules.direct_relation_count
-    )
-    assert parent_policy["blocked_relation_count"] == (
-        loaded_parent_rules.blocked_relation_count
-    )
+    assert parent_policy["direct_relation_count"] == (loaded_parent_rules.direct_relation_count)
+    assert parent_policy["blocked_relation_count"] == (loaded_parent_rules.blocked_relation_count)
     assert 4000 < parent_policy["direct_relation_count"] < expected_relation_count
     assert expected_relation_count > 5000
     assert parent_policy["relation_count"] == expected_relation_count
@@ -1109,7 +1098,10 @@ def test_review_remove_and_restore_updates_file_manifest_and_count(tmp_path):
         assert removed_path.is_file()
         assert not removed_path.is_relative_to(output_dir)
         assert state.manifest[0]["status"] == "removed_by_review"
-        assert json.loads(manifest_path.read_text(encoding="utf-8"))["items"][0]["status"] == "removed_by_review"
+        assert (
+            json.loads(manifest_path.read_text(encoding="utf-8"))["items"][0]["status"]
+            == "removed_by_review"
+        )
 
         restored = manager.restore_review_image(state, 0)
 
@@ -1118,7 +1110,9 @@ def test_review_remove_and_restore_updates_file_manifest_and_count(tmp_path):
         assert not removed_path.exists()
         assert state.manifest[0]["status"] == "passed"
         assert state.manifest[0]["output"] == str(output_image.resolve())
-        assert json.loads(manifest_path.read_text(encoding="utf-8"))["items"][0]["status"] == "passed"
+        assert (
+            json.loads(manifest_path.read_text(encoding="utf-8"))["items"][0]["status"] == "passed"
+        )
     finally:
         manager.executor.shutdown(wait=False, cancel_futures=True)
 
@@ -1202,6 +1196,35 @@ def test_native_folder_picker_reports_process_error(monkeypatch):
         folder_dialog.select_folder("source")
 
 
+def test_macos_folder_picker_returns_selected_directory(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return folder_dialog.subprocess.CompletedProcess(command, 0, f"{tmp_path}\n", "")
+
+    monkeypatch.setattr(folder_dialog.sys, "platform", "darwin")
+    monkeypatch.setattr(folder_dialog.subprocess, "run", fake_run)
+
+    assert folder_dialog.select_folder("source", locale="en") == tmp_path
+    assert captured["command"][0] == "osascript"
+    assert captured["command"][-1] == "Select the image folder to process"
+    assert captured["kwargs"]["encoding"] == "utf-8"
+
+
+def test_macos_folder_picker_cancel_returns_none(monkeypatch):
+    def fake_run(command, **kwargs):
+        return folder_dialog.subprocess.CompletedProcess(
+            command, 0, "__LORAFORGE_CANCELLED__\n", ""
+        )
+
+    monkeypatch.setattr(folder_dialog.sys, "platform", "darwin")
+    monkeypatch.setattr(folder_dialog.subprocess, "run", fake_run)
+
+    assert folder_dialog.select_folder("output") is None
+
+
 def make_record(path: Path, vector: list[float]) -> ImageRecord:
     embedding = np.asarray(vector, dtype=np.float32)
     embedding /= np.linalg.norm(embedding)
@@ -1255,6 +1278,103 @@ def test_scan_can_bypass_deduplication_and_resolution_filter(tmp_path):
     assert stats["resolution_rejected"] == 0
     assert stats["deduplicate_enabled"] is False
     assert stats["resolution_filter_enabled"] is False
+
+
+def test_scan_retries_transient_read_error_and_reports_progress(monkeypatch, tmp_path):
+    image_path = tmp_path / "image.png"
+    Image.new("RGB", (1200, 1200), "white").save(image_path)
+    original_sha256_file = scan_module.sha256_file
+    attempts = 0
+    progress_updates = []
+
+    def flaky_sha256_file(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError(89, "Operation canceled")
+        return original_sha256_file(path)
+
+    monkeypatch.setattr(scan_module, "sha256_file", flaky_sha256_file)
+    records, stats = scan_images(
+        tmp_path,
+        1_000_000,
+        retry_delay_seconds=0,
+        on_progress=lambda processed, total, data: progress_updates.append(
+            (processed, total, data)
+        ),
+    )
+
+    assert len(records) == 1
+    assert attempts == 2
+    assert stats["read_retries"] == 1
+    assert stats["read_failures"] == 0
+    assert progress_updates[0][0:2] == (0, 1)
+    assert progress_updates[-1][0:2] == (1, 1)
+    assert progress_updates[-1][2]["embedding_candidates"] == 1
+
+
+def test_scan_skips_exhausted_read_error_and_records_path(monkeypatch, tmp_path, caplog):
+    bad_path = tmp_path / "bad.png"
+    good_path = tmp_path / "good.png"
+    Image.new("RGB", (1200, 1200), "red").save(bad_path)
+    Image.new("RGB", (1200, 1200), "green").save(good_path)
+    original_sha256_file = scan_module.sha256_file
+
+    def failing_sha256_file(path):
+        if path == bad_path:
+            raise OSError(89, "Operation canceled")
+        return original_sha256_file(path)
+
+    monkeypatch.setattr(scan_module, "sha256_file", failing_sha256_file)
+    records, stats = scan_images(
+        tmp_path,
+        1_000_000,
+        read_attempts=3,
+        retry_delay_seconds=0,
+    )
+
+    assert [record.path for record in records] == [good_path]
+    assert stats["files_processed"] == 2
+    assert stats["invalid_images"] == 1
+    assert stats["read_retries"] == 2
+    assert stats["read_failures"] == 1
+    assert stats["read_failure_details"] == [
+        {
+            "path": str(bad_path),
+            "error": "[Errno 89] Operation canceled",
+            "errno": 89,
+            "attempts": 3,
+            "kind": "read_error",
+        }
+    ]
+    assert str(bad_path) in caplog.text
+
+
+def test_pipeline_scan_emits_incremental_progress(tmp_path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    Image.new("RGB", (128, 128), "red").save(source_dir / "a.png")
+    Image.new("RGB", (128, 128), "blue").save(source_dir / "b.png")
+    events = []
+    engine = PipelineEngine(
+        Settings(),
+        lambda *args: events.append(args),
+        pipeline_options=PipelineOptions(
+            resolution_filter=False,
+            embedding=False,
+            locate=False,
+        ),
+    )
+
+    engine.run("scan-progress", source_dir, None, None)
+
+    running_scan_events = [
+        event for event in events if event[0] == "scan" and event[1] == "running"
+    ]
+    assert any(event[2] == "扫描图片 1/2" for event in running_scan_events)
+    assert any(0.02 < event[3] < 0.15 for event in running_scan_events)
+    assert running_scan_events[-1][4]["files_processed"] == 2
+    assert running_scan_events[-1][4]["files_found"] == 2
 
 
 def test_complete_linkage_and_medoid():
@@ -1476,9 +1596,7 @@ def test_pipeline_can_bypass_visual_stages(tmp_path):
     assert result.stats["output_images"] == 1
     assert result.stats["pipeline_options"]["graph_filter"] is False
     assert any(
-        event[0] == "embedding"
-        and event[1] == "completed"
-        and event[4].get("skipped") is True
+        event[0] == "embedding" and event[1] == "completed" and event[4].get("skipped") is True
         for event in events
     )
 
@@ -1784,7 +1902,10 @@ def test_job_event_stream_serializes_numpy_values():
             0.6,
             {
                 "involved_clusters": [np.int64(1), np.int64(2)],
-                "locate_flow": {"event": "candidate_loaded", "preview": "data:image/jpeg;base64,test"},
+                "locate_flow": {
+                    "event": "candidate_loaded",
+                    "preview": "data:image/jpeg;base64,test",
+                },
             },
         )
         state.status = "completed"
@@ -1903,7 +2024,9 @@ def test_locate_http_provider_uses_bounded_max_tokens(monkeypatch, tmp_path):
         payload = {"choices": [{"message": {"content": "<box>None</box>"}}]}
         return httpx.Response(200, json=payload, request=request)
 
-    provider = LocateAnythingHttpProvider("http://127.0.0.1:9000/v1/chat/completions", "model", 180, 1024)
+    provider = LocateAnythingHttpProvider(
+        "http://127.0.0.1:9000/v1/chat/completions", "model", 180, 1024
+    )
     monkeypatch.setattr(provider.client, "post", fake_post)
 
     try:
@@ -1919,14 +2042,14 @@ def test_locate_http_provider_preserves_error_detail(monkeypatch, tmp_path):
 
     def fake_post(url, json):
         request = httpx.Request("POST", url)
-        detail = {"detail": {"code": "cuda_out_of_memory", "message": "CUDA cache cleared"}}
+        detail = {"detail": {"code": "mlx_out_of_memory", "message": "MLX cache cleared"}}
         return httpx.Response(503, json=detail, request=request)
 
     provider = LocateAnythingHttpProvider("http://127.0.0.1:9000/v1/chat/completions", "model")
     monkeypatch.setattr(provider.client, "post", fake_post)
 
     try:
-        with pytest.raises(RuntimeError, match="cuda_out_of_memory"):
+        with pytest.raises(RuntimeError, match="mlx_out_of_memory"):
             provider.locate(image_path, "prompt")
     finally:
         provider.close()

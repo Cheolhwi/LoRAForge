@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from PIL import Image
@@ -30,38 +29,42 @@ class ChatRequest(BaseModel):
 
 class LocateWorker:
     def __init__(self, model_id: str):
-        if not torch.cuda.is_available():
-            raise RuntimeError("Locate Anything 4bit service requires a CUDA GPU")
-        from transformers import AutoConfig, AutoModel, AutoProcessor, AutoTokenizer
+        if sys.platform != "darwin":
+            raise RuntimeError("The MLX Locate Anything service requires macOS on Apple Silicon")
+        try:
+            import mlx.core as mx
+            from mlx_vlm import load
+            from mlx_vlm.prompt_utils import apply_chat_template
+            from mlx_vlm.utils import prepare_inputs
+        except ImportError as exc:
+            raise RuntimeError(
+                "Locate Anything MLX dependencies are missing. Run ./start_services.sh."
+            ) from exc
 
         self.model_id = model_id
-        self.device = "cuda"
-        self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-        for child in (config, getattr(config, "text_config", None), getattr(config, "vision_config", None)):
-            if child is not None:
-                child._attn_implementation = "sdpa"
-        quantization_config = getattr(config, "quantization_config", None)
-        if isinstance(quantization_config, dict):
-            quantization_config["run_compressed"] = False
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-        self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-        self.model = AutoModel.from_pretrained(
-            model_id,
-            config=config,
-            torch_dtype=self.dtype,
-            trust_remote_code=True,
-        ).to(self.device).eval()
+        self.runtime = "mlx"
+        self.mx = mx
+        self.apply_chat_template = apply_chat_template
+        self.prepare_inputs = prepare_inputs
+        self.model, self.processor = load(model_id)
+        if not hasattr(self.model, "pbd_generate"):
+            raise RuntimeError(
+                f"{model_id} is not a Locate Anything model supported by mlx-vlm"
+            )
         self.lock = threading.Lock()
 
-    @staticmethod
-    def clear_cuda_cache(force_gc: bool = False) -> None:
+    def clear_accelerator_cache(self, force_gc: bool = False) -> None:
         if force_gc:
             gc.collect()
         try:
-            torch.cuda.empty_cache()
+            metal = getattr(self.mx, "metal", None)
+            clear_cache = getattr(metal, "clear_cache", None)
+            if not callable(clear_cache):
+                clear_cache = getattr(self.mx, "clear_cache", None)
+            if callable(clear_cache):
+                clear_cache()
         except Exception as exc:  # noqa: BLE001 - cleanup must not hide the original inference error
-            print(f"[locate-anything] CUDA cache cleanup failed: {exc}", file=sys.stderr, flush=True)
+            print(f"[locate-anything] MLX cache cleanup failed: {exc}", file=sys.stderr, flush=True)
 
     @staticmethod
     def parse_message(messages: list[dict[str, Any]]) -> tuple[Image.Image, str]:
@@ -96,53 +99,34 @@ class LocateWorker:
         return Image.open(io.BytesIO(raw)).convert("RGB"), prompt
 
     def locate(self, image: Image.Image, prompt: str, max_tokens: int) -> str:
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-        text = self.processor.py_apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        images, videos = self.processor.process_vision_info(messages)
-        cpu_inputs = self.processor(text=[text], images=images, videos=videos, return_tensors="pt")
+        formatted_prompt = self.apply_chat_template(
+            self.processor,
+            self.model.config,
+            prompt,
+            num_images=1,
+        )
         inputs = None
-        response = None
-        answer = None
+        tokens = None
         with self.lock:
             try:
-                inputs = cpu_inputs.to(self.device)
-                if "pixel_values" in inputs:
-                    inputs["pixel_values"] = inputs["pixel_values"].to(self.dtype)
-                with torch.inference_mode():
-                    response = self.model.generate(
-                        pixel_values=inputs.get("pixel_values"),
-                        input_ids=inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        image_grid_hws=inputs.get("image_grid_hws"),
-                        tokenizer=self.tokenizer,
-                        max_new_tokens=max_tokens,
-                        use_cache=True,
-                        generation_mode="hybrid",
-                        temperature=0.0,
-                        do_sample=False,
-                        verbose=False,
-                    )
-                answer = response[0] if isinstance(response, tuple) else response
-                if isinstance(answer, str):
-                    result = answer
-                elif isinstance(answer, torch.Tensor):
-                    result = self.tokenizer.decode(answer.tolist(), skip_special_tokens=False)
-                else:
-                    result = str(answer)
-                return result
+                inputs = self.prepare_inputs(
+                    self.processor,
+                    images=[image],
+                    prompts=formatted_prompt,
+                )
+                input_ids = inputs.pop("input_ids")
+                inputs.pop("attention_mask", None)
+                tokens = self.model.pbd_generate(
+                    input_ids,
+                    generation_mode="hybrid",
+                    max_tokens=max_tokens,
+                    **inputs,
+                )
+                return self.processor.decode(tokens, skip_special_tokens=False)
             finally:
-                del answer
-                del response
+                del tokens
                 del inputs
-                self.clear_cuda_cache()
+                self.clear_accelerator_cache()
 
 
 worker: LocateWorker | None = None
@@ -163,10 +147,12 @@ def load_project_env() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global worker
-    model_id = os.getenv("LOCATE_ANYTHING_MODEL_ID", "sahilchachra/LocateAnything-3B-AWQ-W4A16")
-    print(f"[locate-anything] loading {model_id}", flush=True)
+    model_id = os.getenv(
+        "LOCATE_ANYTHING_MODEL_ID", "mlx-community/LocateAnything-3B-4bit"
+    )
+    print(f"[locate-anything] loading MLX model {model_id}", flush=True)
     worker = LocateWorker(model_id)
-    print("[locate-anything] ready", flush=True)
+    print("[locate-anything] ready on Apple Metal via MLX", flush=True)
     yield
     worker = None
 
@@ -176,7 +162,11 @@ app = FastAPI(title="Locate Anything CLI Service", lifespan=lifespan)
 
 @app.get("/health")
 def health():
-    return {"status": "ok" if worker else "loading", "model": worker.model_id if worker else None}
+    return {
+        "status": "ok" if worker else "loading",
+        "model": worker.model_id if worker else None,
+        "runtime": worker.runtime if worker else "mlx",
+    }
 
 
 @app.get("/v1/models")
@@ -196,19 +186,19 @@ def chat_completions(request: ChatRequest):
         image, prompt = worker.parse_message(request.messages)
         answer = worker.locate(image, prompt, request.max_tokens)
     except Exception as exc:
-        is_cuda_oom = isinstance(exc, torch.cuda.OutOfMemoryError) or "out of memory" in str(exc).lower()
-        worker.clear_cuda_cache(force_gc=True)
+        is_memory_error = isinstance(exc, MemoryError) or "out of memory" in str(exc).lower()
+        worker.clear_accelerator_cache(force_gc=True)
         print(
             f"[locate-anything] request {request_id} failed: {type(exc).__name__}: {exc}",
             file=sys.stderr,
             flush=True,
         )
         traceback.print_exc()
-        if is_cuda_oom:
+        if is_memory_error:
             detail = {
-                "code": "cuda_out_of_memory",
+                "code": "mlx_out_of_memory",
                 "message": (
-                    "Locate Anything ran out of CUDA memory. The CUDA cache was cleared; "
+                    "Locate Anything ran out of Apple unified memory. The MLX cache was cleared; "
                     "retry with max_tokens <= 1024 or a smaller image."
                 ),
                 "cause": str(exc),

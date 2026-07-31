@@ -16,22 +16,12 @@ dependencies = [
 
 [project.optional-dependencies]
 models = [
-    "accelerate>=1.0.0",
-    "bitsandbytes>=0.44.0",
-    "compressed-tensors>=0.9.0",
-    "decord>=0.6.0",
-    "dghs-imgutils[gpu]>=0.19.0",
+    "dghs-imgutils>=0.19.0",
     "huggingface-hub>=0.26.0",
-    "lmdb>=1.7.0",
-    "onnxruntime-gpu>=1.21.0,<1.27",
-    "opencv-python-headless>=4.11.0.86",
-    "pandas>=2.2.0",
-    "peft>=0.14.0",
-    "timm>=1.0.0",
+    "onnxruntime>=1.21.0,<1.27",
     "torch>=2.4.0",
-    "torchvision>=0.26.0",
+    "torchvision>=0.19.0",
     "transformers>=4.57.1,<5",
-    "requests>=2.32.0",
 ]
 
 [dependency-groups]
@@ -42,15 +32,7 @@ dev = [
 
 [tool.uv]
 default-groups = ["dev"]
-
-[tool.uv.sources]
-torch = [{ index = "pytorch-cu128" }]
-torchvision = [{ index = "pytorch-cu128" }]
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
+environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
 
 [tool.pytest.ini_options]
 pythonpath = ["backend"]

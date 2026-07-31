@@ -101,45 +101,56 @@ PixAI Tagger 为每张图片生成 general tags，并派生三个选样维度：
 
 ### 系统要求
 
-- Windows 10 或 Windows 11。
+- Apple Silicon Mac（M1 或更新型号），使用原生 arm64 环境。
+- macOS 14 或更新版本。
 - 能够访问 Hugging Face 模型仓库。
 - 足够的磁盘空间保存 Python 环境和模型文件。
-- 建议使用支持 CUDA 的 NVIDIA GPU；真实模型在纯 CPU 环境下可能很慢或无法实用运行。
+- 建议至少 16 GB 统一内存；24 GB 或更多更适合同时运行全部模型。
 
 项目固定使用真实本地模型，不提供运行模式切换。
+
+macOS 版本会按模型使用最合适的 Apple 后端：
+
+- Locate Anything：`mlx-community/LocateAnything-3B-4bit`，通过 MLX 使用 Apple GPU。
+- DINOv3：通过 PyTorch MPS 使用 Apple GPU，推理精度为 FP16。
+- PixAI Tagger：通过 ONNX Runtime CoreML 使用 Apple GPU / Neural Engine，并允许 CoreML 对不支持的算子回退到 CPU。
 
 ### 第一次启动
 
 先下载项目：
 
-```powershell
+```bash
 git clone https://github.com/Cheolhwi/auto_prepare.git
-Set-Location auto_prepare
+cd auto_prepare
+git switch mac-version
 ```
 
 然后：
 
 1. 在 Hugging Face 上同意 DINOv3 模型的使用条款。
 2. 检查项目根目录中的 `.env`。
-3. 如果下载模型需要令牌，在 PowerShell 中临时设置：
+3. 如果下载模型需要令牌，在 Terminal 中临时设置：
 
-```powershell
-$env:HF_TOKEN="<your-token>"
+```bash
+export HF_TOKEN="<your-token>"
 ```
 
-4. 双击 `start_services.bat`，或在 PowerShell 中运行：
+4. 首次运行时赋予脚本执行权限并启动：
 
-```powershell
-.\start_services.bat
+```bash
+chmod +x start_services.sh stop_services.sh
+./start_services.sh
 ```
 
-启动脚本会自动准备 `uv`、Python 3.11、项目依赖和模型文件，然后启动：
+启动脚本会确认当前环境是 Apple Silicon，自动准备 `uv`、原生 arm64 Python 3.11、项目依赖和模型文件，验证 MLX、MPS 与 CoreML，然后启动：
 
 - 前端：[http://127.0.0.1:5173](http://127.0.0.1:5173)
 - 后端：[http://127.0.0.1:8000](http://127.0.0.1:8000)
 - Locate Anything：`http://127.0.0.1:9000`
 
-首次下载和加载模型需要较长时间。后续启动会复用已经安装的依赖、模型和健康服务。
+首次下载和加载模型需要较长时间，也需要数 GB 磁盘空间。后续启动会复用已经安装的依赖、模型和健康服务。运行日志与 PID 文件保存在项目的 `.auto-cat-tmp/` 目录中。
+
+由于 PixAI 的 ONNX 工具链需要 NumPy 1.x，而当前 `mlx-vlm` 需要 NumPy 2.x，启动脚本会自动为 Locate Anything 建立隔离的 `mlx_service` 环境，避免两个上游依赖互相覆盖。
 
 ### 创建数据集
 
@@ -157,7 +168,13 @@ $env:HF_TOKEN="<your-token>"
 
 ### 停止服务
 
-双击 `stop_services.bat`。脚本会请求管理员权限，并只停止属于本项目的 5173、8000 和 9000 端口进程。
+在 Terminal 中运行：
+
+```bash
+./stop_services.sh
+```
+
+脚本只会停止由本项目启动并记录 PID 的前端、后端与 Locate Anything 进程。
 
 ## 输出内容
 
@@ -184,7 +201,7 @@ filtered_dataset_<job_id>/
 
 ## 开发检查
 
-```powershell
+```bash
 uv run pytest
 uv run ruff check .
 ```

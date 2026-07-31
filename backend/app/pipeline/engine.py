@@ -43,9 +43,7 @@ class PipelineEngine:
         self.event = event
         self.similarity_model = similarity_model
         self.minimum_pixels = (
-            minimum_pixels
-            if minimum_pixels is not None
-            else self.settings.min_megapixels
+            minimum_pixels if minimum_pixels is not None else self.settings.min_megapixels
         )
         self.complete_linkage_similarity = float(
             complete_linkage_similarity
@@ -53,9 +51,7 @@ class PipelineEngine:
             else self.settings.complete_linkage_similarity
         )
         self.graph_similarity = float(
-            graph_similarity
-            if graph_similarity is not None
-            else self.settings.graph_similarity
+            graph_similarity if graph_similarity is not None else self.settings.graph_similarity
         )
         for name, value in (
             ("complete_linkage_similarity", self.complete_linkage_similarity),
@@ -117,13 +113,33 @@ class PipelineEngine:
                 "pipeline_options": self.pipeline_options.model_dump(),
             },
         )
+
+        def emit_scan_progress(
+            processed: int,
+            total: int,
+            scan_stats: dict[str, Any],
+        ) -> None:
+            self._ensure_not_stopped()
+            fraction = processed / total if total else 1.0
+            progress = 0.02 + (0.13 * fraction)
+            message = f"扫描图片 {processed}/{total}"
+            if scan_stats.get("read_retries"):
+                message += f"，读取重试 {scan_stats['read_retries']} 次"
+            if scan_stats.get("read_failures"):
+                message += f"，跳过 {scan_stats['read_failures']} 个读取失败文件"
+            self.emit("scan", "running", message, progress, scan_stats)
+
         records, scan_stats = scan_images(
             source_dir,
             self.minimum_pixels,
             deduplicate=self.pipeline_options.deduplicate,
             resolution_filter=self.pipeline_options.resolution_filter,
+            on_progress=emit_scan_progress,
         )
-        self.emit("scan", "completed", "扫描阶段完成", 0.15, scan_stats)
+        scan_message = "扫描阶段完成"
+        if scan_stats.get("read_failures"):
+            scan_message += f"，已跳过 {scan_stats['read_failures']} 个读取失败文件"
+        self.emit("scan", "completed", scan_message, 0.15, scan_stats)
         self._ensure_not_stopped()
 
         prepared_images = 0
@@ -152,10 +168,7 @@ class PipelineEngine:
                     if prepared_path.exists():
                         record.prepared_path = prepared_path
                         prepared_images += 1
-                    if (
-                        index == len(records) - 1
-                        or index % max(1, len(records) // 10) == 0
-                    ):
+                    if index == len(records) - 1 or index % max(1, len(records) // 10) == 0:
                         progress = 0.16 + 0.20 * ((index + 1) / max(len(records), 1))
                         self.emit(
                             "embedding",
@@ -248,7 +261,9 @@ class PipelineEngine:
             len(cluster.members) for cluster in clusters if cluster.cluster_id in involved_clusters
         )
         excluded_images = sum(
-            len(cluster.members) for cluster in clusters if cluster.cluster_id not in involved_clusters
+            len(cluster.members)
+            for cluster in clusters
+            if cluster.cluster_id not in involved_clusters
         )
         self.emit(
             "graph",
@@ -275,7 +290,9 @@ class PipelineEngine:
         )
         self._ensure_not_stopped()
 
-        clusters_to_check = [cluster for cluster in clusters if cluster.cluster_id in involved_clusters]
+        clusters_to_check = [
+            cluster for cluster in clusters if cluster.cluster_id in involved_clusters
+        ]
         if self.pipeline_options.locate:
             self.emit(
                 "locate",
@@ -729,9 +746,14 @@ class PipelineEngine:
             passed += 1
         manifest_path = output_dir / "manifest.json"
         manifest_path.write_text(
-            json.dumps({"job_id": job_id, "items": manifest}, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps({"job_id": job_id, "items": manifest}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
-        return {"output_images": passed, "output_dir": str(output_dir), "manifest_path": str(manifest_path)}
+        return {
+            "output_images": passed,
+            "output_dir": str(output_dir),
+            "manifest_path": str(manifest_path),
+        }
 
     def emit(self, stage, status, message, progress, data):
         self.event(stage, status, message, progress, data)

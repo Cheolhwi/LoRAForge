@@ -189,7 +189,7 @@
     "检测到水印或署名": "Watermark or signature detected",
     "检测到漫画分镜或拼图": "Comic panels or collage detected",
     "等待选择…": "Waiting for selection…",
-    "请在弹出的 Windows 窗口中选择文件夹": "Choose a folder in the Windows dialog",
+    "请在弹出的系统窗口中选择文件夹": "Choose a folder in the system dialog",
     "图片文件夹已选择": "Image folder selected",
     "输出文件夹已选择": "Output folder selected",
     "已取消文件夹选择": "Folder selection cancelled",

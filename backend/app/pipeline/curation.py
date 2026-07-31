@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ..hardware import configure_coreml_provider
 from .caption_rules import (
     DEFAULT_CAPTION_DENYLIST as RULE_ENGINE_DEFAULT_DENYLIST,
 )
@@ -344,14 +346,12 @@ class RealPixAITagger:
     def __init__(self, model_name: str, model_id: str, storage_threshold: float):
         try:
             import onnxruntime
-            import torch
             from imgutils.tagging import get_pixai_tags
         except ImportError as exc:
             raise RuntimeError(
-                "PixAI dependencies are missing. Run start_services.bat to install model support."
+                "PixAI dependencies are missing. Run ./start_services.sh to install model support."
             ) from exc
-        if torch.cuda.is_available() and hasattr(onnxruntime, "preload_dlls"):
-            onnxruntime.preload_dlls()
+        os.environ["ONNX_MODE"] = configure_coreml_provider(onnxruntime)
         self._get_pixai_tags = get_pixai_tags
         self.model_name = model_name
         self.model_id = model_id

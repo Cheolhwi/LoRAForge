@@ -1,0 +1,12 @@
+[project]
+name = "loraforge-locate-mlx-service"
+version = "0.1.0"
+description = "Isolated MLX runtime for LoRAForge's Locate Anything service"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "httpx>=0.27.0",
+    "mlx-vlm==0.6.8",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]

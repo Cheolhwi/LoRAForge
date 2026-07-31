@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     data_root: str = "."
     dino_model_id: str = "facebook/dinov3-vitl16-pretrain-lvd1689m"
     locate_anything_endpoint: str = ""
-    locate_anything_model_id: str = "sahilchachra/LocateAnything-3B-AWQ-W4A16"
+    locate_anything_model_id: str = "mlx-community/LocateAnything-3B-4bit"
     locate_anything_timeout_seconds: int = 180
     locate_anything_max_tokens: int = 1024
     pixai_model_name: str = "v0.9"

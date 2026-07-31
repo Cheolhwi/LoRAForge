@@ -17,6 +17,13 @@ def load_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
+def verify_dino_processor(model_path: str | Path) -> str:
+    from transformers import AutoImageProcessor
+
+    processor = AutoImageProcessor.from_pretrained(model_path)
+    return type(processor).__name__
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     dotenv = load_dotenv(root / ".env")
@@ -24,12 +31,8 @@ def main() -> int:
         os.environ.setdefault(key, value)
 
     dino_model_id = os.getenv("DINO_MODEL_ID", "facebook/dinov3-vitl16-pretrain-lvd1689m")
-    locate_model_id = os.getenv(
-        "LOCATE_ANYTHING_MODEL_ID", "sahilchachra/LocateAnything-3B-AWQ-W4A16"
-    )
-    pixai_model_id = os.getenv(
-        "PIXAI_RUNTIME_MODEL_ID", "deepghs/pixai-tagger-v0.9-onnx"
-    )
+    locate_model_id = os.getenv("LOCATE_ANYTHING_MODEL_ID", "mlx-community/LocateAnything-3B-4bit")
+    pixai_model_id = os.getenv("PIXAI_RUNTIME_MODEL_ID", "deepghs/pixai-tagger-v0.9-onnx")
     locate_endpoint = os.getenv("LOCATE_ANYTHING_ENDPOINT", "").strip()
 
     try:
@@ -37,10 +40,10 @@ def main() -> int:
 
         print(f"[models] Checking DINOv3 model: {dino_model_id}")
         dino_path = snapshot_download(repo_id=dino_model_id)
-        print(f"[models] DINOv3 ready at: {dino_path}")
-        print(f"[models] Checking Locate Anything 4bit model: {locate_model_id}")
+        print(f"[models] DINOv3 assets ready at: {dino_path}")
+        print(f"[models] Checking Locate Anything MLX model: {locate_model_id}")
         locate_path = snapshot_download(repo_id=locate_model_id)
-        print(f"[models] Locate Anything 4bit ready at: {locate_path}")
+        print(f"[models] Locate Anything MLX ready at: {locate_path}")
         print(f"[models] Checking PixAI Tagger v0.9 ONNX model: {pixai_model_id}")
         pixai_path = snapshot_download(repo_id=pixai_model_id)
         print(f"[models] PixAI Tagger ready at: {pixai_path}")
@@ -50,9 +53,20 @@ def main() -> int:
         print(f"        Details: {exc}")
         return 1
 
+    try:
+        processor_name = verify_dino_processor(dino_path)
+    except Exception as exc:  # noqa: BLE001 - fail startup with the real processor error
+        print("[ERROR] DINOv3 image processor could not be initialized.")
+        print("        Run `uv sync --extra models` and check the torchvision installation.")
+        print(f"        Details: {exc}")
+        return 1
+    print(f"[models] DINOv3 processor ready: {processor_name}")
+
     if not locate_endpoint:
         print("[ERROR] LOCATE_ANYTHING_ENDPOINT is empty.")
-        print("        Start a Locate Anything service and set its /v1/chat/completions URL in .env.")
+        print(
+            "        Start a Locate Anything service and set its /v1/chat/completions URL in .env."
+        )
         return 1
 
     print(f"[models] Locate Anything endpoint will be served locally at: {locate_endpoint}")

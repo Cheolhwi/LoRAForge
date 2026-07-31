@@ -62,6 +62,11 @@ def health():
     return {
         "status": "ok",
         "runtime": "local_models",
+        "acceleration": {
+            "locate_anything": "mlx",
+            "dinov3": "mps",
+            "pixai": "CoreMLExecutionProvider",
+        },
         "review_thumbnail": True,
         "minimum_pixels": settings.min_megapixels,
         "complete_linkage_similarity": settings.complete_linkage_similarity,

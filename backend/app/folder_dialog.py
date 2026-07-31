@@ -36,10 +36,22 @@ finally {
 }
 """
 
+_APPLESCRIPT_DIALOG = r"""
+on run argv
+    set dialogTitle to item 1 of argv
+    try
+        set selectedFolder to choose folder with prompt dialogTitle
+        return POSIX path of selectedFolder
+    on error number -128
+        return "__LORAFORGE_CANCELLED__"
+    end try
+end run
+"""
+
 
 def select_folder(purpose: str, timeout_seconds: int = 600, locale: str = "zh") -> Path | None:
-    if sys.platform != "win32":
-        raise RuntimeError("native folder selection is currently supported only on Windows")
+    if sys.platform not in {"darwin", "win32"}:
+        raise RuntimeError("native folder selection is supported only on macOS and Windows")
 
     if locale == "en":
         title = (
@@ -49,6 +61,29 @@ def select_folder(purpose: str, timeout_seconds: int = 600, locale: str = "zh") 
         )
     else:
         title = "选择需要筛选的图片文件夹" if purpose == "source" else "选择筛选结果输出文件夹"
+
+    if sys.platform == "darwin":
+        result = subprocess.run(
+            ["osascript", "-e", _APPLESCRIPT_DIALOG, title],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+        )
+        selected = result.stdout.strip()
+        if selected == "__LORAFORGE_CANCELLED__":
+            return None
+        if result.returncode != 0:
+            detail = (
+                result.stderr.strip()
+                or selected
+                or f"exit code {result.returncode}"
+            )
+            raise RuntimeError(f"folder dialog failed: {detail}")
+        return _validate_selected_folder(selected)
+
     environment = os.environ.copy()
     environment["AUTO_CAT_FOLDER_DIALOG_TITLE"] = title
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -78,6 +113,10 @@ def select_folder(purpose: str, timeout_seconds: int = 600, locale: str = "zh") 
         raise RuntimeError(f"folder dialog failed: {detail}")
 
     selected = result.stdout.strip().strip("\ufeff").strip()
+    return _validate_selected_folder(selected)
+
+
+def _validate_selected_folder(selected: str) -> Path:
     if not selected:
         raise RuntimeError("folder dialog returned an empty path")
     folder = Path(selected)

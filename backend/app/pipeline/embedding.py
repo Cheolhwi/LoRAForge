@@ -1,21 +1,23 @@
 from __future__ import annotations
 
-import gc
+import os
 from pathlib import Path
 from typing import Protocol
 
 import numpy as np
 from PIL import Image, ImageOps
 
+from ..hardware import clear_mps_cache, configure_coreml_provider, require_mps_device
+
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 
 class EmbeddingProvider(Protocol):
     dimension: int
 
-    def embed(self, path: Path, prepared_path: Path | None = None) -> np.ndarray:
-        ...
+    def embed(self, path: Path, prepared_path: Path | None = None) -> np.ndarray: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 class DINOv3Provider:
@@ -34,8 +36,11 @@ class DINOv3Provider:
         self.processor = AutoImageProcessor.from_pretrained(model_id)
         self.model = AutoModel.from_pretrained(model_id)
         self.model.eval()
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model.to(self.device)
+        self.device = require_mps_device(torch)
+        # DINOv3 ViT-L produces non-finite embeddings with FP16 on MPS.
+        # FP32 is stable and still runs entirely on the Apple GPU.
+        self.dtype = torch.float32
+        self.model.to(device=self.device, dtype=self.dtype)
 
     def embed(
         self,
@@ -55,8 +60,14 @@ class DINOv3Provider:
                 raise RuntimeError(
                     f"DINOv3 preprocessed image is {prepared_pixels.shape[-2:]}, expected (448, 448)"
                 )
-            image_mean = self.processor.image_mean if getattr(self.processor, "do_normalize", False) else None
-            image_std = self.processor.image_std if getattr(self.processor, "do_normalize", False) else None
+            image_mean = (
+                self.processor.image_mean
+                if getattr(self.processor, "do_normalize", False)
+                else None
+            )
+            image_std = (
+                self.processor.image_std if getattr(self.processor, "do_normalize", False) else None
+            )
             _save_preprocessed_image(
                 prepared_pixels,
                 prepared_path,
@@ -64,23 +75,19 @@ class DINOv3Provider:
                 image_std,
             )
         inputs = cpu_inputs.to(self.device)
+        inputs["pixel_values"] = inputs["pixel_values"].to(dtype=self.dtype)
         with self.torch.inference_mode():
             outputs = self.model(**inputs)
         vector = getattr(outputs, "pooler_output", None)
         if vector is None:
             vector = outputs.last_hidden_state[:, 0]
         vector = vector[0].detach().float().cpu().numpy()
-        if vector.shape[0] != self.dimension:
-            raise RuntimeError(f"DINOv3 embedding dimension is {vector.shape[0]}, expected 1024")
-        norm = np.linalg.norm(vector)
-        return (vector / max(norm, 1e-12)).astype(np.float32)
+        return _normalize_embedding(vector, self.dimension, "DINOv3", path)
 
     def close(self) -> None:
         if hasattr(self, "model"):
             del self.model
-        if self.device == "cuda":
-            gc.collect()
-            self.torch.cuda.empty_cache()
+        clear_mps_cache(self.torch, force_gc=True)
 
 
 class PixAIEmbeddingProvider:
@@ -91,14 +98,12 @@ class PixAIEmbeddingProvider:
     def __init__(self, model_name: str):
         try:
             import onnxruntime
-            import torch
             from imgutils.tagging import get_pixai_tags
         except ImportError as exc:  # pragma: no cover - depends on optional extra
             raise RuntimeError(
-                "PixAI similarity requires model dependencies. Run start_services.bat."
+                "PixAI similarity requires model dependencies. Run ./start_services.sh."
             ) from exc
-        if torch.cuda.is_available() and hasattr(onnxruntime, "preload_dlls"):
-            onnxruntime.preload_dlls()
+        os.environ["ONNX_MODE"] = configure_coreml_provider(onnxruntime)
         self._get_pixai_tags = get_pixai_tags
         self.model_name = model_name
 
@@ -119,14 +124,7 @@ class PixAIEmbeddingProvider:
             ),
             dtype=np.float32,
         ).reshape(-1)
-        if vector.shape != (self.dimension,):
-            raise RuntimeError(
-                f"PixAI embedding dimension is {vector.shape}, expected ({self.dimension},)"
-            )
-        norm = np.linalg.norm(vector)
-        if not np.isfinite(norm) or norm <= 1e-12:
-            raise RuntimeError(f"PixAI returned an invalid embedding for {path.name}")
-        return (vector / norm).astype(np.float32)
+        return _normalize_embedding(vector, self.dimension, "PixAI", path)
 
     def close(self) -> None:
         return None
@@ -135,9 +133,7 @@ class PixAIEmbeddingProvider:
 def _save_pixai_preprocessed_image(source: Path, destination: Path) -> None:
     with Image.open(source) as source_image:
         image = ImageOps.exif_transpose(source_image)
-        if image.mode in {"RGBA", "LA"} or (
-            image.mode == "P" and "transparency" in image.info
-        ):
+        if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
             foreground = image.convert("RGBA")
             background = Image.new("RGBA", foreground.size, "white")
             image = Image.alpha_composite(background, foreground).convert("RGB")
@@ -146,6 +142,23 @@ def _save_pixai_preprocessed_image(source: Path, destination: Path) -> None:
         image = image.resize((448, 448), Image.Resampling.BILINEAR)
         destination.parent.mkdir(parents=True, exist_ok=True)
         image.save(destination, format="PNG")
+
+
+def _normalize_embedding(
+    vector: np.ndarray,
+    expected_dimension: int,
+    model_label: str,
+    path: Path,
+) -> np.ndarray:
+    vector = np.asarray(vector, dtype=np.float32).reshape(-1)
+    if vector.shape != (expected_dimension,):
+        raise RuntimeError(
+            f"{model_label} embedding dimension is {vector.shape}, expected ({expected_dimension},)"
+        )
+    norm = np.linalg.norm(vector)
+    if not np.isfinite(vector).all() or not np.isfinite(norm) or norm <= 1e-12:
+        raise RuntimeError(f"{model_label} returned an invalid embedding for {path.name}")
+    return (vector / norm).astype(np.float32)
 
 
 def _save_preprocessed_image(

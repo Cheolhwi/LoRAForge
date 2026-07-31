@@ -98,45 +98,56 @@ Final captions pass through confidence filtering, a denylist, mutually exclusive
 
 ### Requirements
 
-- Windows 10 or Windows 11.
+- An Apple Silicon Mac (M1 or newer) running native arm64 tools.
+- macOS 14 or newer.
 - Access to the Hugging Face model repositories.
 - Enough disk space for the Python environment and model files.
-- An NVIDIA GPU with CUDA support is recommended. The production models can be very slow or impractical in a CPU-only environment.
+- At least 16 GB of unified memory is recommended; 24 GB or more is preferable when all models run together.
 
 LoRAForge always uses real local models and does not provide a runtime mode switch.
+
+The macOS version uses the most suitable Apple backend for each model:
+
+- Locate Anything: `mlx-community/LocateAnything-3B-4bit` on the Apple GPU through MLX.
+- DINOv3: FP16 inference on the Apple GPU through PyTorch MPS.
+- PixAI Tagger: ONNX Runtime CoreML on the Apple GPU / Neural Engine, with CoreML-managed CPU fallback for unsupported operators.
 
 ### First launch
 
 Clone the project:
 
-```powershell
+```bash
 git clone https://github.com/Cheolhwi/auto_prepare.git
-Set-Location auto_prepare
+cd auto_prepare
+git switch mac-version
 ```
 
 Then:
 
 1. Accept the DINOv3 model terms on Hugging Face.
 2. Review the `.env` file in the project root.
-3. If a token is required to download the models, set it temporarily in PowerShell:
+3. If a token is required to download the models, set it temporarily in Terminal:
 
-```powershell
-$env:HF_TOKEN="<your-token>"
+```bash
+export HF_TOKEN="<your-token>"
 ```
 
-4. Double-click `start_services.bat`, or run it from PowerShell:
+4. Make the launchers executable the first time, then start the services:
 
-```powershell
-.\start_services.bat
+```bash
+chmod +x start_services.sh stop_services.sh
+./start_services.sh
 ```
 
-The startup script prepares `uv`, Python 3.11, project dependencies, and model files, then starts:
+The startup script verifies Apple Silicon, prepares `uv`, native arm64 Python 3.11, project dependencies, and model files, validates MLX, MPS, and CoreML, then starts:
 
 - Frontend: [http://127.0.0.1:5173](http://127.0.0.1:5173)
 - Backend: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 - Locate Anything: `http://127.0.0.1:9000`
 
-The initial model download and load can take a while. Later launches reuse the installed dependencies, downloaded models, and any already-healthy services.
+The initial model download and load can take a while and requires several GB of disk space. Later launches reuse installed dependencies, downloaded models, and any already-healthy services. Logs and PID files are stored under `.auto-cat-tmp/`.
+
+PixAI's ONNX toolchain requires NumPy 1.x while the current `mlx-vlm` requires NumPy 2.x. The launcher therefore creates an isolated `mlx_service` environment for Locate Anything so the two upstream dependency stacks cannot overwrite each other.
 
 ### Create a dataset
 
@@ -154,7 +165,13 @@ If the source images are already organized, use **Run PixAI directly**. This pat
 
 ### Stop the services
 
-Double-click `stop_services.bat`. The script requests administrator access and stops only this project's processes on ports 5173, 8000, and 9000.
+Run:
+
+```bash
+./stop_services.sh
+```
+
+The script stops only the frontend, backend, and Locate Anything processes recorded by this project.
 
 ## Output
 
@@ -181,7 +198,7 @@ filtered_dataset_<job_id>/
 
 ## Development checks
 
-```powershell
+```bash
 uv run pytest
 uv run ruff check .
 ```
