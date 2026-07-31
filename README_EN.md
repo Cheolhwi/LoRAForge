@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/loraforge-logo.png" alt="LoRAForge" width="640">
+  <img src="assets/loraforge-logo.png" alt="LoRAForge" width="480">
 </p>
 
 [简体中文](README.md)
