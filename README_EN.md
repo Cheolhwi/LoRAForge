@@ -1,12 +1,12 @@
-# LoRAForge
+<p align="center">
+  <img src="assets/loraforge-logo.png" alt="LoRAForge" width="900">
+</p>
 
 [简体中文](README.md)
 
 LoRAForge is a local image-dataset preparation tool that turns an unorganized image folder into a dataset suitable for LoRA training.
 
 It automatically handles image deduplication, resolution filtering, visual clustering, style-consistency filtering, watermark and collage detection, and provides a manual review interface. After review, LoRAForge uses PixAI Tagger to generate tags, selects images according to target distributions, and writes the training images together with their caption files.
-
-All images and models are processed locally. The frontend communicates only with the local backend service.
 
 ## What it does
 
@@ -74,7 +74,7 @@ The remaining images are checked by total pixel count. The interface defaults to
 
 ### 2. Visual embeddings and clustering
 
-Every image is converted into a 1024-dimensional vector. DINOv3 is the default model, while PixAI Tagger's native visual embedding is also available.
+Every image is converted into a 1024-dimensional vector. DINOv3 is the default model, while PixAI Tagger's native visual embedding is also available. If the dataset contains real-world images, DINOv3 is recommended.
 
 LoRAForge uses Complete-linkage clustering. Images remain in the same cluster only when every pair in that cluster meets the similarity requirement. Each cluster receives a medoid—the image that best represents it—and retains other members as backup candidates for visual inspection.
 

@@ -1,12 +1,12 @@
-# LoRAForge
+<p align="center">
+  <img src="assets/loraforge-logo.png" alt="LoRAForge" width="900">
+</p>
 
 [English](README_EN.md)
 
 LoRAForge 是一个在本机运行的图片数据集整理工具，用来把杂乱的图片文件夹处理成适合 LoRA 训练的数据集。
 
 它会自动完成图片去重、分辨率过滤、视觉聚类、风格一致性筛选、水印与拼图检测，并提供人工复核界面。复核完成后，软件使用 PixAI Tagger 生成标签、按目标分布选择图片，最后输出训练图片和对应的 Caption 文本。
-
-所有图片和模型都在本机处理，前端只访问本机后端服务。
 
 ## 能做什么
 - 删除内容完全相同的重复图片，过滤像素分辨率不足的图片。
@@ -73,7 +73,7 @@ flowchart TD
 
 ### 2. Visual Embedding 与聚类
 
-每张图片会转换成一个 1024 维向量。默认模型是 DINOv3，也可以使用 PixAI Tagger 的原生 visual embedding。
+每张图片会转换成一个 1024 维向量。默认模型是 DINOv3，也可以使用 PixAI Tagger 的原生 visual embedding（若数据集中包含现实图片，建议优先选择 DINOv3）。
 
 使用 Complete-linkage 聚类。只有簇内任意两张图片都达到相似度要求时，它们才会留在同一个簇。每个簇会选出一个最能代表该簇的 medoid，并保留其他图片作为检测失败时的备用候选。
 
