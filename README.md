@@ -8,6 +8,10 @@ LoRAForge 是一个在本机运行的图片数据集整理工具，用来把杂�
 
 它会自动完成图片去重、分辨率过滤、视觉聚类、风格一致性筛选、水印与拼图检测，并提供人工复核界面。复核完成后，软件使用 PixAI Tagger 生成标签、按目标分布选择图片，最后输出训练图片和对应的 Caption 文本。
 
+<p align="center">
+  <img src="assets/loraforge-canvas-preview.png" alt="LoRAForge 无限画布前端预览" width="1100">
+</p>
+
 ## 能做什么
 - 删除内容完全相同的重复图片，过滤像素分辨率不足的图片。
 - 使用 visual embedding 分析图片相似度。
