@@ -39,7 +39,13 @@ from app.pipeline.pixai_parent_rules import load_pixai_parent_rules
 from app.pipeline.prompts import COMIC_PROMPT, WATERMARK_PROMPT
 from app.pipeline.scan import scan_images
 from app.pipeline.types import Cluster, ImageRecord, Inspection, PipelineResult
-from app.schemas import CurationFinalize, CurationStart, JobCreate, PixAIJobCreate
+from app.schemas import (
+    CurationFinalize,
+    CurationStart,
+    JobCreate,
+    PipelineOptions,
+    PixAIJobCreate,
+)
 from PIL import Image
 from pydantic import ValidationError
 
@@ -984,6 +990,64 @@ def test_review_image_serves_only_passed_task_output(monkeypatch, tmp_path):
     assert Path(response.path) == output_image.resolve()
 
 
+def test_review_thumbnail_is_720p_cached_jpeg(monkeypatch, tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output_image = output_dir / "00001-image.png"
+    Image.new("RGB", (1800, 900), "green").save(output_image)
+    state = JobState("review-thumbnail", str(tmp_path), str(output_dir))
+    state.manifest = [
+        {
+            "source": str(tmp_path / "image.png"),
+            "output": str(output_image),
+            "cluster_id": 1,
+            "candidate_role": "medoid",
+            "locate_attempt": 1,
+            "status": "passed",
+            "reason": None,
+        }
+    ]
+    monkeypatch.setattr(main_module, "get_state", lambda job_id: state)
+    main_module._review_thumbnail_bytes.cache_clear()
+
+    first = main_module.review_thumbnail("review-thumbnail", 0)
+    second = main_module.review_thumbnail("review-thumbnail", 0)
+
+    assert first.media_type == "image/jpeg"
+    assert first.body == second.body
+    with Image.open(BytesIO(first.body)) as thumbnail:
+        assert thumbnail.width <= 1280
+        assert thumbnail.height <= 720
+        assert thumbnail.size == (1280, 640)
+
+
+@pytest.mark.parametrize(
+    ("source_size", "expected_size"),
+    [
+        ((900, 1800), (640, 1280)),
+        ((1600, 1600), (960, 960)),
+        ((640, 480), (640, 480)),
+    ],
+)
+def test_review_thumbnail_preserves_orientation_and_does_not_upscale(
+    tmp_path,
+    source_size,
+    expected_size,
+):
+    image_path = tmp_path / f"{source_size[0]}x{source_size[1]}.png"
+    Image.new("RGB", source_size, "blue").save(image_path)
+    stat = image_path.stat()
+
+    content = main_module._review_thumbnail_bytes(
+        str(image_path),
+        stat.st_mtime_ns,
+        stat.st_size,
+    )
+
+    with Image.open(BytesIO(content)) as thumbnail:
+        assert thumbnail.size == expected_size
+
+
 def test_review_image_rejects_path_outside_task_output(monkeypatch, tmp_path):
     output_dir = tmp_path / "output"
     output_dir.mkdir()
@@ -1172,6 +1236,27 @@ def test_scan_accepts_720p_when_task_uses_720p_threshold(tmp_path):
     assert strict_stats["resolution_rejected"] == 1
 
 
+def test_scan_can_bypass_deduplication_and_resolution_filter(tmp_path):
+    original = tmp_path / "original.png"
+    duplicate = tmp_path / "duplicate.png"
+    Image.new("RGB", (100, 100), "black").save(original)
+    duplicate.write_bytes(original.read_bytes())
+
+    records, stats = scan_images(
+        tmp_path,
+        1_000_000,
+        deduplicate=False,
+        resolution_filter=False,
+    )
+
+    assert len(records) == 2
+    assert stats["unique_images"] == 2
+    assert stats["duplicates"] == 0
+    assert stats["resolution_rejected"] == 0
+    assert stats["deduplicate_enabled"] is False
+    assert stats["resolution_filter_enabled"] is False
+
+
 def test_complete_linkage_and_medoid():
     records = [
         make_record(Path("a.jpg"), [1, 0, 0, 0]),
@@ -1205,6 +1290,39 @@ def test_cluster_audit_reports_medoid_and_minimum_pairwise_similarity():
     assert audit_cluster["minimum_similarity"] == pytest.approx(0.8)
     assert audit_cluster["members"][0]["similarity_to_medoid"] == pytest.approx(1.0)
     assert audit_cluster["members"][1]["similarity_to_medoid"] == pytest.approx(0.8)
+
+
+def test_pipeline_uses_task_similarity_thresholds(monkeypatch):
+    captured = {}
+
+    def fake_graph(embeddings, top_k, similarity_threshold):
+        captured["top_k"] = top_k
+        captured["similarity_threshold"] = similarity_threshold
+        return {0: {1}, 1: {0}}
+
+    monkeypatch.setattr(engine_module, "build_mutual_topk_graph", fake_graph)
+    records = [
+        make_record(Path("a.jpg"), [1, 0, 0, 0]),
+        make_record(Path("b.jpg"), [0.9, 0.1, 0, 0]),
+    ]
+    clusters = [
+        Cluster(cluster_id=index, members=[record], medoid=record)
+        for index, record in enumerate(records)
+    ]
+    engine = PipelineEngine(
+        Settings(),
+        lambda *args: None,
+        complete_linkage_similarity=0.94,
+        graph_similarity=0.72,
+    )
+
+    payload = engine._cluster_audit_payload(clusters)
+    kept, _ = engine._select_graph_component(clusters)
+
+    assert payload["similarity"] == pytest.approx(0.94)
+    assert captured["similarity_threshold"] == pytest.approx(0.72)
+    assert captured["top_k"] == engine.settings.graph_top_k
+    assert kept == set()
 
 
 def test_save_preprocessed_image_creates_lossless_448_png(tmp_path):
@@ -1301,6 +1419,68 @@ def test_job_create_accepts_task_resolution_threshold_and_rejects_too_small_valu
     assert request.minimum_pixels == 921_600
     with pytest.raises(ValidationError):
         JobCreate(source_dir="images", minimum_pixels=10_000)
+
+
+def test_job_create_accepts_task_similarity_thresholds_and_rejects_out_of_range():
+    request = JobCreate(
+        source_dir="images",
+        complete_linkage_similarity=0.94,
+        graph_similarity=0.72,
+    )
+
+    assert request.complete_linkage_similarity == pytest.approx(0.94)
+    assert request.graph_similarity == pytest.approx(0.72)
+    with pytest.raises(ValidationError):
+        JobCreate(source_dir="images", complete_linkage_similarity=1.01)
+    with pytest.raises(ValidationError):
+        JobCreate(source_dir="images", graph_similarity=-0.01)
+
+
+def test_pipeline_options_normalize_stage_dependencies():
+    options = PipelineOptions(
+        embedding=False,
+        clustering=True,
+        graph_filter=True,
+        locate=False,
+        retry=True,
+    )
+
+    assert options.embedding is False
+    assert options.clustering is False
+    assert options.graph_filter is False
+    assert options.locate is False
+    assert options.retry is False
+
+
+def test_pipeline_can_bypass_visual_stages(tmp_path):
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "output"
+    source_dir.mkdir()
+    Image.new("RGB", (128, 128), "teal").save(source_dir / "small.png")
+    events = []
+    engine = PipelineEngine(
+        Settings(),
+        lambda *args: events.append(args),
+        pipeline_options=PipelineOptions(
+            resolution_filter=False,
+            embedding=False,
+            locate=False,
+        ),
+    )
+
+    result = engine.run("bypass-visual", source_dir, output_dir, None)
+
+    assert result.stats["embedding_model"] == "disabled"
+    assert result.stats["clusters"] == 1
+    assert result.stats["locate_bypassed"] is True
+    assert result.stats["output_images"] == 1
+    assert result.stats["pipeline_options"]["graph_filter"] is False
+    assert any(
+        event[0] == "embedding"
+        and event[1] == "completed"
+        and event[4].get("skipped") is True
+        for event in events
+    )
 
 
 def test_pipeline_uses_task_resolution_threshold(monkeypatch, tmp_path):
@@ -1428,7 +1608,11 @@ def test_pipeline_reuses_prepared_image_for_locate(
             on_step("comic", "completed", [])
         return Inspection([], [], True, None, attempt)
 
-    monkeypatch.setattr(engine_module, "scan_images", lambda source, minimum: ([record], {"files_found": 1}))
+    monkeypatch.setattr(
+        engine_module,
+        "scan_images",
+        lambda source, minimum, **kwargs: ([record], {"files_found": 1}),
+    )
     monkeypatch.setattr(
         engine_module,
         factory_name,

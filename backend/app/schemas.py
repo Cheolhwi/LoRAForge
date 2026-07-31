@@ -4,11 +4,33 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+class PipelineOptions(BaseModel):
+    deduplicate: bool = True
+    resolution_filter: bool = True
+    embedding: bool = True
+    clustering: bool = True
+    graph_filter: bool = True
+    locate: bool = True
+    retry: bool = True
+
+    @model_validator(mode="after")
+    def normalize_dependencies(self):
+        if not self.embedding:
+            self.clustering = False
+            self.graph_filter = False
+        if not self.locate:
+            self.retry = False
+        return self
+
+
 class JobCreate(BaseModel):
     source_dir: str = Field(min_length=1)
     output_dir: str | None = None
     similarity_model: Literal["dinov3", "pixai"] = "dinov3"
     minimum_pixels: int | None = Field(default=None, ge=65_536, le=100_000_000)
+    complete_linkage_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    graph_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    pipeline_options: PipelineOptions = Field(default_factory=PipelineOptions)
     seed: int | None = None
 
 
@@ -29,6 +51,9 @@ class JobSummary(BaseModel):
     workflow: str = "filtering"
     similarity_model: str = "dinov3"
     minimum_pixels: int | None = None
+    complete_linkage_similarity: float | None = None
+    graph_similarity: float | None = None
+    pipeline_options: dict[str, bool] = Field(default_factory=dict)
     source_dir: str
     output_dir: str | None
     current_stage: str | None

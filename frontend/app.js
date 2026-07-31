@@ -1,12 +1,16 @@
 const API = window.AUTO_CAT_API || "http://127.0.0.1:8000/api";
 const UI_LANGUAGE = window.LoRAForgeI18n?.language || "zh";
 const translate = window.LoRAForgeI18n?.translate || ((value) => value);
+const REVIEW_REMOVE_CONFIRMATION_KEY = "loraforge-review-remove-confirmed-v1";
+const REVIEW_PAGE_SIZE = 50;
 let configuredClusterSimilarity = 0.90;
+let configuredGraphSimilarity = 0.65;
 let currentJob = null;
 let eventSource = null;
 let jobRunning = false;
 let pickerOpen = false;
 let visualPipelineStarted = false;
+let reviewThumbnailsAvailable = false;
 let lastEventId = 0;
 let locateFlowState = { watermarkBoxes: [], comicBoxes: [] };
 let reviewItems = [];
@@ -15,6 +19,10 @@ let reviewLastFocused = null;
 let reviewUndo = null;
 let reviewJobId = null;
 let reviewLocked = false;
+let reviewRemoveDialogResolve = null;
+let reviewRemoveDialogTrigger = null;
+let reviewRemovalConfirmationAcknowledged = false;
+let reviewPage = 0;
 let curationState = { status: "not_started", items: [] };
 let auditState = {
   jobId: null,
@@ -63,7 +71,39 @@ function updateResolutionThresholdUi() {
   const label = resolutionThresholdLabel(minimumPixels);
   $("rule-min-resolution").textContent = `≥ ${label}`;
   $("pipeline-min-resolution").textContent = `SHA-256 · ≥ ${label}`;
-  $("metric-valid-label").textContent = `有效图片（≥${label}）`;
+  const metricValidLabel = $("metric-valid-label");
+  if (metricValidLabel) metricValidLabel.textContent = `有效图片（≥${label}）`;
+}
+
+function similarityThresholdValue(id, fallback) {
+  const value = Number($(id).value);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
+}
+
+function updateFilteringThresholdUi() {
+  configuredClusterSimilarity = similarityThresholdValue(
+    "complete-linkage-similarity",
+    configuredClusterSimilarity,
+  );
+  configuredGraphSimilarity = similarityThresholdValue(
+    "graph-similarity",
+    configuredGraphSimilarity,
+  );
+  const clusterLabel = configuredClusterSimilarity.toFixed(2);
+  const graphLabel = configuredGraphSimilarity.toFixed(2);
+  $("rule-cluster-threshold").textContent = `${clusterLabel} cluster`;
+  $("rule-graph-threshold").textContent = `${graphLabel} Mutual Top-20`;
+  $("pipeline-cluster-threshold").textContent = `similarity ${clusterLabel}`;
+  const metricClustersLabel = $("metric-clusters-label");
+  if (metricClustersLabel) metricClustersLabel.textContent = `${clusterLabel} 簇`;
+  $("audit-clustering-tab").textContent = `${clusterLabel} 聚簇`;
+  $("audit-graph-tab").textContent = `${graphLabel} 图筛选`;
+  if (!auditState.clusters.length || $("audit-status").classList.contains("pending")) {
+    auditState.clusterSimilarity = configuredClusterSimilarity;
+    $("audit-metric-b-label").textContent = `${clusterLabel} 簇`;
+    $("audit-description").textContent = `流水线运行到 ${clusterLabel} 聚簇后，将在这里显示超低清缩略图。`;
+    $("audit-note").textContent = `${clusterLabel} 只负责把图片分组，不会在此处删除图片。`;
+  }
 }
 
 function setDefaultMinimumPixels(value) {
@@ -89,6 +129,8 @@ function updateControlAvailability() {
   $("clear-output-dir").disabled = jobRunning || pickerOpen || !$("output-dir").value;
   $("similarity-model").disabled = jobRunning || pickerOpen;
   $("minimum-pixels").disabled = jobRunning || pickerOpen;
+  $("complete-linkage-similarity").disabled = jobRunning || pickerOpen;
+  $("graph-similarity").disabled = jobRunning || pickerOpen;
   const standalonePrefix = $("standalone-lora-prefix");
   const standaloneLocked = visualPipelineStarted;
   const standaloneReady = Boolean(
@@ -141,8 +183,31 @@ async function chooseFolder(button) {
 }
 
 function updateMetrics(data) {
-  const map = { "metric-files": data.files_found, "metric-unique": data.unique_images, "metric-valid": data.embedding_candidates, "metric-clusters": data.clusters, "metric-checked": data.checked_clusters, "metric-output": data.output_images };
-  Object.entries(map).forEach(([id, value]) => { if (value !== undefined) $(id).textContent = value; });
+  const map = {
+    "metric-files": data.files_found,
+    "metric-unique": data.unique_images,
+    "metric-valid": data.embedding_candidates,
+    "metric-clusters": data.clusters,
+    "metric-checked": data.checked_clusters,
+    "metric-output": data.output_images,
+    "node-files-found": data.files_found,
+    "node-duplicates": data.duplicates,
+    "node-resolution-passed": data.embedding_candidates,
+    "node-resolution-rejected": data.resolution_rejected,
+    "node-embedding-processed": data.embedding_candidates,
+    "node-graph-kept": data.kept_clusters,
+    "node-locate-checked": data.checked_clusters,
+    "node-locate-dropped": data.dropped_clusters,
+  };
+  Object.entries(map).forEach(([id, value]) => {
+    const element = $(id);
+    const isDisplayValue = (
+      typeof value === "number"
+      ? Number.isFinite(value)
+      : typeof value === "string"
+    );
+    if (element && isDisplayValue) element.textContent = String(value);
+  });
 }
 
 function updateNodes(stage, status) {
@@ -168,6 +233,9 @@ function resetAudit() {
   };
   setStatus($("audit-status"), "等待聚簇", "pending");
   const clusteringLabel = configuredClusterSimilarity.toFixed(2);
+  const graphLabel = configuredGraphSimilarity.toFixed(2);
+  $("audit-clustering-tab").textContent = `${clusteringLabel} 聚簇`;
+  $("audit-graph-tab").textContent = `${graphLabel} 图筛选`;
   $("audit-description").textContent = `流水线运行到 ${clusteringLabel} 聚簇后，将在这里显示超低清缩略图。`;
   $("audit-note").textContent = `${clusteringLabel} 只负责把图片分组，不会在此处删除图片。`;
   ["a", "b", "c", "d"].forEach((key) => { $(`audit-metric-${key}`).textContent = "—"; });
@@ -204,7 +272,12 @@ function renderAudit() {
   if (isGraph && auditState.graph) {
     if (auditState.filter === "kept") visibleClusters = visibleClusters.filter((cluster) => keptIds.has(cluster.cluster_id));
     if (auditState.filter === "excluded") visibleClusters = visibleClusters.filter((cluster) => !keptIds.has(cluster.cluster_id));
-    $("audit-description").textContent = `0.65 Mutual Top-${auditState.graph.top_k}、${auditState.graph.core_degree}-core 与最大连通分量的最终去留`;
+    const graphSimilarity = Number(auditState.graph.similarity);
+    const graphSimilarityLabel = Number.isFinite(graphSimilarity)
+      ? graphSimilarity.toFixed(2)
+      : configuredGraphSimilarity.toFixed(2);
+    $("audit-graph-tab").textContent = `${graphSimilarityLabel} 图筛选`;
+    $("audit-description").textContent = `${graphSimilarityLabel} Mutual Top-${auditState.graph.top_k}、${auditState.graph.core_degree}-core 与最大连通分量的最终去留`;
     $("audit-metric-a-label").textContent = "图节点 / 边";
     $("audit-metric-a").textContent = `${auditState.graph.graph_nodes} / ${auditState.graph.graph_edges}`;
     $("audit-metric-b-label").textContent = "3-core 节点";
@@ -292,6 +365,7 @@ function updateAudit(payload, jobId) {
     auditState.clusterSimilarity = payload.similarity;
     auditState.view = "clustering";
     auditState.filter = "all";
+    $("audit-clustering-tab").textContent = `${Number(auditState.clusterSimilarity).toFixed(2)} 聚簇`;
     setStatus($("audit-status"), `${Number(auditState.clusterSimilarity).toFixed(2)} 已完成 · ${auditState.clusters.length} 簇`, "completed");
     renderAudit();
   }
@@ -299,6 +373,7 @@ function updateAudit(payload, jobId) {
     auditState.graph = payload;
     auditState.view = "graph";
     auditState.filter = "excluded";
+    $("audit-graph-tab").textContent = `${Number(payload.similarity).toFixed(2)} 图筛选`;
     setStatus($("audit-status"), `图筛选完成 · 排除 ${payload.excluded_clusters} 簇`, "completed");
     renderAudit();
   }
@@ -559,8 +634,10 @@ function resetReview() {
   reviewUndo = null;
   reviewJobId = null;
   reviewLocked = false;
+  reviewPage = 0;
   $("review-panel").hidden = true;
   $("review-notice").hidden = true;
+  $("review-pagination").hidden = true;
   $("review-gallery").replaceChildren();
   $("lora-prefix").value = "";
   $("lora-prefix").disabled = false;
@@ -569,19 +646,89 @@ function resetReview() {
   resetCuration();
 }
 
-function renderReview(jobId, items) {
-  reviewJobId = jobId;
-  reviewItems = items
-    .map((item, manifestIndex) => ({ ...item, manifestIndex, jobId }))
-    .filter((item) => item.status === "passed" && item.output);
+function reviewPageCount() {
+  return Math.max(1, Math.ceil(reviewItems.length / REVIEW_PAGE_SIZE));
+}
+
+function updateReviewPagination() {
+  const totalPages = reviewPageCount();
+  const start = reviewItems.length ? reviewPage * REVIEW_PAGE_SIZE + 1 : 0;
+  const end = Math.min((reviewPage + 1) * REVIEW_PAGE_SIZE, reviewItems.length);
+  $("review-pagination").hidden = reviewItems.length <= REVIEW_PAGE_SIZE;
+  $("review-page-range").textContent = `${start}–${end} / ${reviewItems.length}`;
+  $("review-page-input").value = String(reviewPage + 1);
+  $("review-page-input").max = String(totalPages);
+  $("review-page-total").textContent = String(totalPages);
+  $("review-page-previous").disabled = reviewPage === 0;
+  $("review-page-next").disabled = reviewPage >= totalPages - 1;
+}
+
+function createReviewCard(item, index, pageOffset) {
+  const sourceName = item.source.split(/[\\/]/).pop();
+  const card = document.createElement("article");
+  card.className = "review-card";
+
+  const thumb = document.createElement("div");
+  thumb.className = "review-thumb";
+  const image = document.createElement("img");
+  image.loading = pageOffset < 15 ? "eager" : "lazy";
+  image.decoding = "async";
+  image.fetchPriority = pageOffset < 10 ? "high" : "low";
+  image.width = 320;
+  image.height = 240;
+  const reviewUrl = `${API}/jobs/${encodeURIComponent(item.jobId)}/review/${item.manifestIndex}`;
+  image.src = reviewThumbnailsAvailable ? `${reviewUrl}/thumbnail` : reviewUrl;
+  if (reviewThumbnailsAvailable) {
+    image.addEventListener("error", () => {
+      if (image.dataset.originalFallback) return;
+      image.dataset.originalFallback = "1";
+      image.src = reviewUrl;
+    });
+  }
+  image.alt = sourceName;
+  const position = document.createElement("span");
+  const digits = Math.max(3, String(reviewItems.length).length);
+  position.className = "review-card-index";
+  position.textContent = `${String(index + 1).padStart(digits, "0")} / ${String(reviewItems.length).padStart(digits, "0")}`;
+  const role = document.createElement("span");
+  role.className = `review-card-role ${item.candidate_role === "backup_retry" ? "retry" : ""}`;
+  role.textContent = item.candidate_role === "backup_retry" ? "RETRY PASS" : "MEDOID";
+  thumb.append(image, position, role);
+
+  const caption = document.createElement("div");
+  caption.className = "review-card-caption";
+  const name = document.createElement("strong");
+  name.textContent = sourceName;
+  name.title = item.source;
+  const meta = document.createElement("span");
+  meta.textContent = `CLUSTER #${item.cluster_id} · ATTEMPT ${item.locate_attempt}`;
+  caption.append(name, meta);
+
+  const openButton = document.createElement("button");
+  openButton.type = "button";
+  openButton.className = "review-card-open";
+  openButton.setAttribute("aria-label", `查看图片 ${index + 1}：${sourceName}`);
+  openButton.append(thumb, caption);
+  openButton.addEventListener("click", () => openReviewImage(index, openButton));
+
+  const passed = document.createElement("button");
+  passed.type = "button";
+  passed.className = "review-card-pass";
+  passed.textContent = "✓";
+  passed.title = "点击移出候选集";
+  passed.setAttribute("aria-label", `将 ${sourceName} 移出候选集`);
+  passed.disabled = reviewLocked;
+  passed.addEventListener("click", () => removeReviewImageAt(index, passed));
+
+  card.append(openButton, passed);
+  return card;
+}
+
+function renderReviewPage(resetScroll = false) {
   const gallery = $("review-gallery");
+  const previousScrollTop = resetScroll ? 0 : gallery.scrollTop;
   gallery.replaceChildren();
-  $("review-panel").hidden = false;
-  $("review-count").textContent = reviewItems.length;
-  $("curation-submit").disabled = reviewLocked || !reviewItems.length;
-  $("review-summary").textContent = reviewItems.length
-    ? `已加载最终输出目录中的 ${reviewItems.length} 张图片，点击缩略图可逐张检查`
-    : "本次任务没有通过并进入最终数据集的图片";
+  updateReviewPagination();
 
   if (!reviewItems.length) {
     const empty = document.createElement("div");
@@ -591,44 +738,41 @@ function renderReview(jobId, items) {
     return;
   }
 
-  reviewItems.forEach((item, index) => {
-    const sourceName = item.source.split(/[\\/]/).pop();
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "review-card";
-    card.setAttribute("aria-label", `查看图片 ${index + 1}：${sourceName}`);
+  const start = reviewPage * REVIEW_PAGE_SIZE;
+  const end = Math.min(start + REVIEW_PAGE_SIZE, reviewItems.length);
+  const fragment = document.createDocumentFragment();
+  for (let index = start; index < end; index += 1) {
+    fragment.appendChild(createReviewCard(reviewItems[index], index, index - start));
+  }
+  gallery.appendChild(fragment);
+  gallery.scrollTop = previousScrollTop;
+}
 
-    const thumb = document.createElement("div");
-    thumb.className = "review-thumb";
-    const image = document.createElement("img");
-    image.loading = "lazy";
-    image.decoding = "async";
-    image.src = `${API}/jobs/${encodeURIComponent(jobId)}/review/${item.manifestIndex}`;
-    image.alt = sourceName;
-    const position = document.createElement("span");
-    position.className = "review-card-index";
-    position.textContent = `${String(index + 1).padStart(3, "0")} / ${String(reviewItems.length).padStart(3, "0")}`;
-    const role = document.createElement("span");
-    role.className = `review-card-role ${item.candidate_role === "backup_retry" ? "retry" : ""}`;
-    role.textContent = item.candidate_role === "backup_retry" ? "RETRY PASS" : "MEDOID";
-    const passed = document.createElement("span");
-    passed.className = "review-card-pass";
-    passed.textContent = "✓";
-    passed.title = "默认通过";
-    thumb.append(image, position, role, passed);
+function goToReviewPage(page) {
+  const requestedPage = Math.trunc(Number(page) || 0);
+  const nextPage = Math.max(0, Math.min(requestedPage, reviewPageCount() - 1));
+  if (nextPage === reviewPage) {
+    updateReviewPagination();
+    return;
+  }
+  reviewPage = nextPage;
+  renderReviewPage(true);
+}
 
-    const caption = document.createElement("div");
-    caption.className = "review-card-caption";
-    const name = document.createElement("strong");
-    name.textContent = sourceName;
-    name.title = item.source;
-    const meta = document.createElement("span");
-    meta.textContent = `CLUSTER #${item.cluster_id} · ATTEMPT ${item.locate_attempt}`;
-    caption.append(name, meta);
-    card.append(thumb, caption);
-    card.addEventListener("click", () => openReviewImage(index, card));
-    gallery.appendChild(card);
-  });
+function renderReview(jobId, items) {
+  const jobChanged = reviewJobId !== jobId;
+  reviewJobId = jobId;
+  reviewItems = items
+    .map((item, manifestIndex) => ({ ...item, manifestIndex, jobId }))
+    .filter((item) => item.status === "passed" && item.output);
+  reviewPage = jobChanged ? 0 : Math.min(reviewPage, reviewPageCount() - 1);
+  $("review-panel").hidden = false;
+  $("review-count").textContent = reviewItems.length;
+  $("curation-submit").disabled = reviewLocked || !reviewItems.length;
+  $("review-summary").textContent = reviewItems.length
+    ? `已加载 ${reviewItems.length} 张图片，每页显示 ${REVIEW_PAGE_SIZE} 张；点击缩略图检查，点击对勾移出`
+    : "本次任务没有通过并进入最终数据集的图片";
+  renderReviewPage(jobChanged);
 }
 
 function resetCuration() {
@@ -641,6 +785,7 @@ function resetCuration() {
   $("curation-progress-bar").style.width = "0%";
   $("curation-progress-value").textContent = "0%";
   $("curation-progress-message").textContent = "等待进入 PixAI 阶段";
+  $("curation-finalize").disabled = true;
   setStatus($("curation-status"), "等待 Submit", "pending");
   document.querySelectorAll(".curation-step").forEach((step) => {
     step.classList.remove("running", "completed", "failed");
@@ -652,6 +797,9 @@ function setReviewLocked(locked) {
   $("lora-prefix").disabled = locked;
   $("curation-submit").disabled = locked || !reviewItems.length;
   $("review-undo").disabled = locked;
+  document.querySelectorAll(".review-card-pass").forEach((button) => {
+    button.disabled = locked;
+  });
   if (!$("review-lightbox").hidden) updateReviewImage();
 }
 
@@ -944,17 +1092,65 @@ function showReviewNotice(message, canUndo = false) {
   $("review-notice").hidden = false;
 }
 
-async function removeCurrentReviewImage() {
+function reviewRemovalConfirmationSeen() {
+  if (reviewRemovalConfirmationAcknowledged) return true;
+  try {
+    reviewRemovalConfirmationAcknowledged =
+      window.localStorage.getItem(REVIEW_REMOVE_CONFIRMATION_KEY) === "1";
+    return reviewRemovalConfirmationAcknowledged;
+  } catch {
+    return false;
+  }
+}
+
+function rememberReviewRemovalConfirmation() {
+  reviewRemovalConfirmationAcknowledged = true;
+  try {
+    window.localStorage.setItem(REVIEW_REMOVE_CONFIRMATION_KEY, "1");
+  } catch {
+    // Storage may be unavailable in private or restricted browser contexts.
+  }
+}
+
+function requestReviewRemovalConfirmation(filename, trigger) {
+  if (reviewRemovalConfirmationSeen()) return Promise.resolve(true);
+  if (reviewRemoveDialogResolve) return Promise.resolve(false);
+
+  reviewRemoveDialogTrigger = trigger;
+  $("review-remove-dialog-filename").textContent = filename;
+  $("review-remove-dialog").hidden = false;
+  document.body.classList.add("review-confirm-open");
+  $("review-remove-dialog-cancel").focus();
+  return new Promise((resolve) => {
+    reviewRemoveDialogResolve = resolve;
+  });
+}
+
+function closeReviewRemovalConfirmation(confirmed) {
+  const resolve = reviewRemoveDialogResolve;
+  if (!resolve) return;
+  if (confirmed) rememberReviewRemovalConfirmation();
+  $("review-remove-dialog").hidden = true;
+  document.body.classList.remove("review-confirm-open");
+  reviewRemoveDialogResolve = null;
+  const trigger = reviewRemoveDialogTrigger;
+  reviewRemoveDialogTrigger = null;
+  resolve(confirmed);
+  if (!confirmed) trigger?.focus();
+}
+
+async function removeReviewImageAt(index, button) {
   if (reviewLocked) return;
-  const item = reviewItems[reviewIndex];
+  const item = reviewItems[index];
   if (!item) return;
   const filename = item.source.split(/[\\/]/).pop();
-  if (!window.confirm(translate(`确定将“${filename}”移出最终数据集吗？\n\n文件会被移到可恢复区，可以立即撤销。`))) return;
-
-  const button = $("review-remove");
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.textContent = "正在移出…";
+  const actionButton = button || $("review-remove");
+  if (!await requestReviewRemovalConfirmation(filename, actionButton)) return;
+  const originalLabel = actionButton.textContent;
+  const isCardAction = actionButton.classList.contains("review-card-pass");
+  actionButton.disabled = true;
+  actionButton.classList.toggle("removing", isCardAction);
+  actionButton.textContent = isCardAction ? "…" : "正在移出…";
   try {
     const response = await fetch(
       `${API}/jobs/${encodeURIComponent(item.jobId)}/review/${item.manifestIndex}`,
@@ -963,16 +1159,23 @@ async function removeCurrentReviewImage() {
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json();
     reviewUndo = { jobId: item.jobId, manifestIndex: item.manifestIndex, filename };
-    closeReviewImage(false);
+    if (!$("review-lightbox").hidden) closeReviewImage(false);
     showReviewNotice(`“${filename}”已移出最终数据集`, true);
     $("metric-output").textContent = payload.output_images;
     await loadManifest(item.jobId);
   } catch (error) {
     showReviewNotice(`移出失败：${error.message}`, false);
   } finally {
-    button.disabled = false;
-    button.textContent = originalLabel;
+    if (actionButton.isConnected) {
+      actionButton.disabled = false;
+      actionButton.classList.remove("removing");
+      actionButton.textContent = originalLabel;
+    }
   }
+}
+
+async function removeCurrentReviewImage() {
+  await removeReviewImageAt(reviewIndex, $("review-remove"));
 }
 
 async function undoReviewRemoval() {
@@ -1005,6 +1208,7 @@ async function checkHealth() {
     const response = await fetch(`${API}/health`);
     if (!response.ok) throw new Error();
     const payload = await response.json();
+    reviewThumbnailsAvailable = payload.review_thumbnail === true;
     setDefaultMinimumPixels(payload.minimum_pixels);
     const captionThreshold = Number(payload.pixai_caption_threshold);
     if (Number.isFinite(captionThreshold)) $("caption-threshold").value = captionThreshold;
@@ -1012,20 +1216,16 @@ async function checkHealth() {
     if (Number.isInteger(captionMaxTags)) {
       $("caption-max-tags").textContent = `${captionMaxTags} · .env`;
     }
-    const threshold = Number(payload.complete_linkage_similarity);
-    if (Number.isFinite(threshold)) {
-      configuredClusterSimilarity = threshold;
-      const label = threshold.toFixed(2);
-      if (!auditState.clusters.length) auditState.clusterSimilarity = threshold;
-      $("rule-cluster-threshold").textContent = `${label} cluster`;
-      $("pipeline-cluster-threshold").textContent = `similarity ${label}`;
-      $("metric-clusters-label").textContent = `${label} 簇`;
-      $("audit-clustering-tab").textContent = `${label} 聚簇`;
-      $("audit-metric-b-label").textContent = `${label} 簇`;
-      $("audit-description").textContent = `流水线运行到 ${label} 聚簇后，将在这里显示超低清缩略图。`;
-      $("audit-note").textContent = `${label} 只负责把图片分组，不会在此处删除图片。`;
+    const clusterThreshold = Number(payload.complete_linkage_similarity);
+    if (Number.isFinite(clusterThreshold)) {
+      $("complete-linkage-similarity").value = clusterThreshold.toFixed(2);
     }
-    setStatus($("health-badge"), "后端在线 · 真实模型", "completed");
+    const graphThreshold = Number(payload.graph_similarity);
+    if (Number.isFinite(graphThreshold)) {
+      $("graph-similarity").value = graphThreshold.toFixed(2);
+    }
+    updateFilteringThresholdUi();
+    setStatus($("health-badge"), "后端在线", "completed");
   }
   catch { setStatus($("health-badge"), "后端未连接", "failed"); }
 }
@@ -1055,6 +1255,7 @@ function listenToJob(jobId, startEventId = 0) {
       $("progress-message").textContent = event.message;
     }
     updateMetrics(event.data || {});
+    if (event.data?.cluster_audit) updateMetrics(event.data.cluster_audit);
     if (event.data?.cluster_audit) updateAudit(event.data.cluster_audit, event.job_id);
     if (event.stage === "clustering" && event.status === "running") {
       if (event.data?.similarity !== undefined) {
@@ -1063,7 +1264,13 @@ function listenToJob(jobId, startEventId = 0) {
       setStatus($("audit-status"), `${Number(auditState.clusterSimilarity).toFixed(2)} 聚簇中`, "running");
     }
     if (event.stage === "graph" && event.status === "running") {
-      setStatus($("audit-status"), "0.65 图筛选中", "running");
+      const graphSimilarity = Number(event.data?.similarity);
+      if (Number.isFinite(graphSimilarity)) configuredGraphSimilarity = graphSimilarity;
+      setStatus(
+        $("audit-status"),
+        `${configuredGraphSimilarity.toFixed(2)} 图筛选中`,
+        "running",
+      );
     }
     if (event.data?.locate_flow) renderLocateFlow(event.data.locate_flow);
     if (event.data?.curation_flow) renderCurationFlow(event.data.curation_flow, event.job_id);
@@ -1150,6 +1357,16 @@ async function loadManifest(jobId) {
 $("job-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!$("source-dir").value) return;
+  const thresholdInputs = [
+    $("complete-linkage-similarity"),
+    $("graph-similarity"),
+  ];
+  const invalidThreshold = thresholdInputs.find((input) => !input.checkValidity());
+  if (invalidThreshold) {
+    invalidThreshold.reportValidity();
+    return;
+  }
+  updateFilteringThresholdUi();
   jobRunning = true;
   updateControlAvailability();
   $("event-log").innerHTML = '<div class="empty-state">任务已排队，等待第一条事件…</div>';
@@ -1168,6 +1385,9 @@ $("job-form").addEventListener("submit", async (event) => {
         output_dir: $("output-dir").value || null,
         similarity_model: $("similarity-model").value,
         minimum_pixels: Number($("minimum-pixels").value),
+        complete_linkage_similarity: configuredClusterSimilarity,
+        graph_similarity: configuredGraphSimilarity,
+        pipeline_options: window.LoRAForgeCanvas?.getPipelineOptions?.(),
       }),
     });
     if (!response.ok) throw new Error(await response.text());
@@ -1365,12 +1585,29 @@ $("clear-output-dir").addEventListener("click", () => {
 $("standalone-lora-prefix").addEventListener("input", updateControlAvailability);
 $("similarity-model").addEventListener("change", updateSimilarityModelUi);
 $("minimum-pixels").addEventListener("change", updateResolutionThresholdUi);
+$("complete-linkage-similarity").addEventListener("input", updateFilteringThresholdUi);
+$("graph-similarity").addEventListener("input", updateFilteringThresholdUi);
+$("review-page-previous").addEventListener("click", () => goToReviewPage(reviewPage - 1));
+$("review-page-next").addEventListener("click", () => goToReviewPage(reviewPage + 1));
+$("review-page-input").addEventListener("change", (event) => {
+  goToReviewPage(Number(event.currentTarget.value) - 1);
+});
+$("review-page-input").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  goToReviewPage(Number(event.currentTarget.value) - 1);
+});
 $("clear-log").addEventListener("click", () => { $("event-log").innerHTML = '<div class="empty-state">日志已清空。</div>'; });
 $("review-close").addEventListener("click", () => closeReviewImage());
 $("review-previous").addEventListener("click", () => moveReviewImage(-1));
 $("review-next").addEventListener("click", () => moveReviewImage(1));
 $("review-remove").addEventListener("click", removeCurrentReviewImage);
 $("review-undo").addEventListener("click", undoReviewRemoval);
+$("review-remove-dialog-cancel").addEventListener("click", () => closeReviewRemovalConfirmation(false));
+$("review-remove-dialog-confirm").addEventListener("click", () => closeReviewRemovalConfirmation(true));
+$("review-remove-dialog").addEventListener("click", (event) => {
+  if (event.target === $("review-remove-dialog")) closeReviewRemovalConfirmation(false);
+});
 $("review-lightbox").addEventListener("click", (event) => {
   if (event.target === $("review-lightbox")) closeReviewImage();
 });
@@ -1391,6 +1628,10 @@ document.querySelectorAll(".audit-filters button").forEach((button) => {
   });
 });
 document.addEventListener("keydown", (event) => {
+  if (!$("review-remove-dialog").hidden) {
+    if (event.key === "Escape") closeReviewRemovalConfirmation(false);
+    return;
+  }
   if ($("review-lightbox").hidden) return;
   if (event.key === "Escape") closeReviewImage();
   if (event.key === "ArrowLeft") moveReviewImage(-1);
@@ -1401,5 +1642,6 @@ resetLocateFlow();
 resetReview();
 updateSimilarityModelUi();
 updateResolutionThresholdUi();
+updateFilteringThresholdUi();
 updateControlAvailability();
 checkHealth();

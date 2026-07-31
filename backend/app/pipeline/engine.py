@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 from ..config import Settings
+from ..schemas import PipelineOptions
 from .clustering import complete_linkage_clusters
 from .embedding import make_embedding_provider, make_pixai_embedding_provider
 from .graph import build_mutual_topk_graph, connected_components, iterative_k_core
@@ -32,6 +33,9 @@ class PipelineEngine:
         event: EventCallback,
         similarity_model: str = "dinov3",
         minimum_pixels: int | None = None,
+        complete_linkage_similarity: float | None = None,
+        graph_similarity: float | None = None,
+        pipeline_options: PipelineOptions | None = None,
     ):
         if similarity_model not in {"dinov3", "pixai"}:
             raise ValueError(f"unsupported similarity model: {similarity_model}")
@@ -43,6 +47,23 @@ class PipelineEngine:
             if minimum_pixels is not None
             else self.settings.min_megapixels
         )
+        self.complete_linkage_similarity = float(
+            complete_linkage_similarity
+            if complete_linkage_similarity is not None
+            else self.settings.complete_linkage_similarity
+        )
+        self.graph_similarity = float(
+            graph_similarity
+            if graph_similarity is not None
+            else self.settings.graph_similarity
+        )
+        for name, value in (
+            ("complete_linkage_similarity", self.complete_linkage_similarity),
+            ("graph_similarity", self.graph_similarity),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between 0 and 1")
+        self.pipeline_options = pipeline_options or PipelineOptions()
         self._stop = threading.Event()
 
     def run(
@@ -80,86 +101,149 @@ class PipelineEngine:
             if self.minimum_pixels == 1280 * 720
             else f"{self.minimum_pixels / 1_000_000:g}MP"
         )
+        scan_actions = ["扫描图片"]
+        if self.pipeline_options.deduplicate:
+            scan_actions.append("SHA-256 去重")
+        if self.pipeline_options.resolution_filter:
+            scan_actions.append(f"分辨率检查（≥ {minimum_label}）")
         self.emit(
             "scan",
             "running",
-            f"扫描图片、SHA-256 去重并检查分辨率（≥ {minimum_label}）",
+            "、".join(scan_actions),
             0.02,
             {
                 "minimum_pixels": self.minimum_pixels,
                 "minimum_resolution_label": minimum_label,
+                "pipeline_options": self.pipeline_options.model_dump(),
             },
         )
-        records, scan_stats = scan_images(source_dir, self.minimum_pixels)
+        records, scan_stats = scan_images(
+            source_dir,
+            self.minimum_pixels,
+            deduplicate=self.pipeline_options.deduplicate,
+            resolution_filter=self.pipeline_options.resolution_filter,
+        )
         self.emit("scan", "completed", "扫描阶段完成", 0.15, scan_stats)
         self._ensure_not_stopped()
 
-        if self.similarity_model == "pixai":
-            embedding_label = "PixAI Tagger visual embedding"
-            embedding_provider = make_pixai_embedding_provider(
-                self.settings.pixai_model_name,
+        prepared_images = 0
+        embedding_dimension = 0
+        if self.pipeline_options.embedding:
+            if self.similarity_model == "pixai":
+                embedding_label = "PixAI Tagger visual embedding"
+                embedding_provider = make_pixai_embedding_provider(
+                    self.settings.pixai_model_name,
+                )
+            else:
+                embedding_label = "DINOv3 embedding"
+                embedding_provider = make_embedding_provider(self.settings.dino_model_id)
+            embedding_dimension = embedding_provider.dimension
+            self.emit(
+                "embedding",
+                "running",
+                f"生成 {embedding_label}（{embedding_provider.dimension} 维）",
+                0.16,
+                {"similarity_model": self.similarity_model},
+            )
+            try:
+                for index, record in enumerate(records):
+                    prepared_path = temporary_dir / f"{index:08d}.png"
+                    record.embedding = embedding_provider.embed(record.path, prepared_path)
+                    if prepared_path.exists():
+                        record.prepared_path = prepared_path
+                        prepared_images += 1
+                    if (
+                        index == len(records) - 1
+                        or index % max(1, len(records) // 10) == 0
+                    ):
+                        progress = 0.16 + 0.20 * ((index + 1) / max(len(records), 1))
+                        self.emit(
+                            "embedding",
+                            "running",
+                            f"embedding {index + 1}/{len(records)}",
+                            progress,
+                            {},
+                        )
+            finally:
+                embedding_provider.close()
+            self.emit(
+                "embedding",
+                "completed",
+                f"{embedding_label} 阶段完成",
+                0.36,
+                {
+                    "embedding_dimension": embedding_dimension,
+                    "embedding_model": self.similarity_model,
+                    "prepared_images": prepared_images,
+                },
             )
         else:
-            embedding_label = "DINOv3 embedding"
-            embedding_provider = make_embedding_provider(self.settings.dino_model_id)
-        self.emit(
-            "embedding",
-            "running",
-            f"生成 {embedding_label}（{embedding_provider.dimension} 维）",
-            0.16,
-            {"similarity_model": self.similarity_model},
-        )
-        prepared_images = 0
-        try:
-            for index, record in enumerate(records):
-                prepared_path = temporary_dir / f"{index:08d}.png"
-                record.embedding = embedding_provider.embed(record.path, prepared_path)
-                if prepared_path is not None and prepared_path.exists():
-                    record.prepared_path = prepared_path
-                    prepared_images += 1
-                if index == len(records) - 1 or index % max(1, len(records) // 10) == 0:
-                    progress = 0.16 + 0.20 * ((index + 1) / max(len(records), 1))
-                    self.emit("embedding", "running", f"embedding {index + 1}/{len(records)}", progress, {})
-        finally:
-            embedding_provider.close()
-        self.emit(
-            "embedding",
-            "completed",
-            f"{embedding_label} 阶段完成",
-            0.36,
-            {
-                "embedding_dimension": embedding_provider.dimension,
-                "embedding_model": self.similarity_model,
-                "prepared_images": prepared_images,
-            },
-        )
+            self.emit(
+                "embedding",
+                "completed",
+                "Visual Embedding 已旁路",
+                0.36,
+                {
+                    "embedding_dimension": 0,
+                    "embedding_model": "disabled",
+                    "prepared_images": 0,
+                    "skipped": True,
+                },
+            )
         self._ensure_not_stopped()
 
-        clustering_similarity = self.settings.complete_linkage_similarity
+        clustering_similarity = self.complete_linkage_similarity
         clustering_label = f"{clustering_similarity:.2f}"
-        self.emit(
-            "clustering",
-            "running",
-            f"Complete-linkage {clustering_label} 聚簇并计算 medoid",
-            0.38,
-            {"similarity": clustering_similarity},
-        )
-        clusters = complete_linkage_clusters(records, clustering_similarity)
+        if self.pipeline_options.clustering:
+            self.emit(
+                "clustering",
+                "running",
+                f"Complete-linkage {clustering_label} 聚簇并计算 medoid",
+                0.38,
+                {"similarity": clustering_similarity},
+            )
+            clusters = complete_linkage_clusters(records, clustering_similarity)
+            clustering_message = f"得到 {len(clusters)} 个 {clustering_label} 簇"
+        else:
+            clusters = [
+                Cluster(cluster_id=index, members=[record], medoid=record)
+                for index, record in enumerate(records)
+            ]
+            clustering_message = f"聚簇已旁路，建立 {len(clusters)} 个单图簇"
         self.emit(
             "clustering",
             "completed",
-            f"得到 {len(clusters)} 个 {clustering_label} 簇",
+            clustering_message,
             0.48,
             {
                 "clusters": len(clusters),
                 "cluster_sizes": [len(cluster.members) for cluster in clusters],
                 "cluster_audit": self._cluster_audit_payload(clusters),
+                "skipped": not self.pipeline_options.clustering,
             },
         )
         self._ensure_not_stopped()
 
-        self.emit("graph", "running", "建立 Mutual Top-20 图并迭代 3-core", 0.50, {})
-        involved_clusters, graph_audit = self._select_graph_component(clusters)
+        if self.pipeline_options.graph_filter:
+            self.emit(
+                "graph",
+                "running",
+                "建立 Mutual Top-20 图并迭代 3-core",
+                0.50,
+                {"similarity": self.graph_similarity},
+            )
+            involved_clusters, graph_audit = self._select_graph_component(clusters)
+            graph_message = f"最大连通分量涉及 {len(involved_clusters)} 个簇"
+        else:
+            involved_clusters = {cluster.cluster_id for cluster in clusters}
+            graph_audit = {
+                "graph_nodes": len(clusters),
+                "graph_edges": 0,
+                "nodes_with_edges": 0,
+                "core_nodes": len(clusters),
+                "component_count": 1 if clusters else 0,
+            }
+            graph_message = f"图筛选已旁路，保留全部 {len(clusters)} 个簇"
         kept_images = sum(
             len(cluster.members) for cluster in clusters if cluster.cluster_id in involved_clusters
         )
@@ -169,14 +253,15 @@ class PipelineEngine:
         self.emit(
             "graph",
             "completed",
-            f"最大连通分量涉及 {len(involved_clusters)} 个簇",
+            graph_message,
             0.60,
             {
                 "involved_clusters": sorted(involved_clusters),
                 "core_degree": self.settings.core_degree,
+                "skipped": not self.pipeline_options.graph_filter,
                 "cluster_audit": {
                     "event": "graph_filtered",
-                    "similarity": self.settings.graph_similarity,
+                    "similarity": self.graph_similarity,
                     "top_k": self.settings.graph_top_k,
                     "core_degree": self.settings.core_degree,
                     "kept_cluster_ids": sorted(involved_clusters),
@@ -190,35 +275,61 @@ class PipelineEngine:
         )
         self._ensure_not_stopped()
 
-        self.emit("locate", "running", "只检查最大连通分量涉及的簇", 0.62, {})
-        locate_provider = make_locate_provider(
-            self.settings.locate_anything_endpoint,
-            self.settings.locate_anything_model_id,
-            self.settings.locate_anything_timeout_seconds,
-            self.settings.locate_anything_max_tokens,
-        )
         clusters_to_check = [cluster for cluster in clusters if cluster.cluster_id in involved_clusters]
-        try:
-            manifest, locate_stats = self._run_locate_stage(locate_provider, clusters_to_check, rng)
-        finally:
-            locate_provider.close()
+        if self.pipeline_options.locate:
+            self.emit(
+                "locate",
+                "running",
+                "只检查图筛选保留簇的候选",
+                0.62,
+                {},
+            )
+            locate_provider = make_locate_provider(
+                self.settings.locate_anything_endpoint,
+                self.settings.locate_anything_model_id,
+                self.settings.locate_anything_timeout_seconds,
+                self.settings.locate_anything_max_tokens,
+            )
+            try:
+                manifest, locate_stats = self._run_locate_stage(
+                    locate_provider,
+                    clusters_to_check,
+                    rng,
+                    allow_retry=self.pipeline_options.retry,
+                )
+            finally:
+                locate_provider.close()
+        else:
+            manifest, locate_stats = self._bypass_locate_stage(clusters_to_check)
         self._ensure_not_stopped()
 
         self.emit("output", "running", "复制通过图片并写入 manifest.json", 0.92, {})
         output_stats = self._write_output(job_id, source_dir, output_dir, manifest)
         stats = {
             **scan_stats,
-            "embedding_dimension": embedding_provider.dimension,
-            "embedding_model": self.similarity_model,
+            "embedding_dimension": embedding_dimension,
+            "embedding_model": (
+                self.similarity_model if self.pipeline_options.embedding else "disabled"
+            ),
             "prepared_images": prepared_images,
             "clusters": len(clusters),
+            "complete_linkage_similarity": self.complete_linkage_similarity,
+            "graph_similarity": self.graph_similarity,
+            "pipeline_options": self.pipeline_options.model_dump(),
             **locate_stats,
             **output_stats,
         }
         self.emit("output", "completed", "输出阶段完成", 1.0, stats)
         return PipelineResult(stats=stats, manifest=manifest)
 
-    def _run_locate_stage(self, locate_provider, clusters_to_check, rng):
+    def _run_locate_stage(
+        self,
+        locate_provider,
+        clusters_to_check,
+        rng,
+        *,
+        allow_retry: bool = True,
+    ):
         manifest: list[dict[str, Any]] = []
         locate_stats = {
             "checked_clusters": 0,
@@ -266,7 +377,7 @@ class PipelineEngine:
                     "attempt": 1,
                 }
             else:
-                backup = self._choose_backup(cluster, rng)
+                backup = self._choose_backup(cluster, rng) if allow_retry else None
                 if backup is None:
                     locate_stats["dropped_clusters"] += 1
                     manifest.append(self._dropped_item(primary, cluster, primary_inspection))
@@ -278,6 +389,7 @@ class PipelineEngine:
                         "attempt": 1,
                         "reason": primary_inspection.reason,
                         "retry_available": False,
+                        "retry_disabled": not allow_retry,
                     }
                 else:
                     locate_stats["retried"] += 1
@@ -348,6 +460,49 @@ class PipelineEngine:
         )
         return manifest, locate_stats
 
+    def _bypass_locate_stage(
+        self,
+        clusters_to_check: list[Cluster],
+    ) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
+        manifest = []
+        for cluster in clusters_to_check:
+            if cluster.medoid is None:
+                continue
+            manifest.append(
+                {
+                    "source": str(cluster.medoid.path),
+                    "output": None,
+                    "cluster_id": cluster.cluster_id,
+                    "candidate_role": "locate_bypassed",
+                    "locate_attempt": 0,
+                    "status": "passed",
+                    "reason": None,
+                }
+            )
+        locate_stats: dict[str, int | bool] = {
+            "checked_clusters": 0,
+            "primary_pass": 0,
+            "retried": 0,
+            "retry_pass": 0,
+            "dropped_clusters": 0,
+            "locate_bypassed": True,
+        }
+        self.emit(
+            "locate",
+            "completed",
+            f"Locate Anything 已旁路，直接保留 {len(manifest)} 个候选",
+            0.90,
+            {
+                **locate_stats,
+                "locate_flow": {
+                    "event": "pipeline_completed",
+                    "checked_clusters": 0,
+                    "skipped": True,
+                },
+            },
+        )
+        return manifest, locate_stats
+
     def _select_graph_component(self, clusters: list[Cluster]) -> tuple[set[int], dict[str, int]]:
         if not clusters:
             return set(), {
@@ -358,7 +513,11 @@ class PipelineEngine:
                 "component_count": 0,
             }
         embeddings = np.stack([cluster.medoid.embedding for cluster in clusters])
-        graph = build_mutual_topk_graph(embeddings, self.settings.graph_top_k, self.settings.graph_similarity)
+        graph = build_mutual_topk_graph(
+            embeddings,
+            self.settings.graph_top_k,
+            self.graph_similarity,
+        )
         core = iterative_k_core(graph, self.settings.core_degree)
         components = connected_components(core)
         largest = components[0] if components else set()
@@ -373,17 +532,21 @@ class PipelineEngine:
     def _cluster_audit_payload(self, clusters: list[Cluster]) -> dict[str, Any]:
         audit_clusters = []
         for cluster in clusters:
-            embeddings = np.stack([member.embedding for member in cluster.members])
-            similarities = np.clip(embeddings @ embeddings.T, -1.0, 1.0)
             medoid_index = next(
                 index for index, member in enumerate(cluster.members) if member is cluster.medoid
             )
-            if len(cluster.members) == 1:
-                minimum_similarity = 1.0
+            if any(member.embedding is None for member in cluster.members):
+                similarities = np.eye(len(cluster.members), dtype=np.float32)
+                minimum_similarity = 1.0 if len(cluster.members) == 1 else 0.0
             else:
-                minimum_similarity = float(
-                    similarities[np.triu_indices(len(cluster.members), k=1)].min()
-                )
+                embeddings = np.stack([member.embedding for member in cluster.members])
+                similarities = np.clip(embeddings @ embeddings.T, -1.0, 1.0)
+                if len(cluster.members) == 1:
+                    minimum_similarity = 1.0
+                else:
+                    minimum_similarity = float(
+                        similarities[np.triu_indices(len(cluster.members), k=1)].min()
+                    )
 
             audit_clusters.append(
                 {
@@ -405,7 +568,7 @@ class PipelineEngine:
 
         return {
             "event": "clusters_ready",
-            "similarity": self.settings.complete_linkage_similarity,
+            "similarity": self.complete_linkage_similarity,
             "total_images": sum(len(cluster.members) for cluster in clusters),
             "clusters": audit_clusters,
         }

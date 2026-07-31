@@ -30,7 +30,13 @@ from .pipeline.curation import (
 )
 from .pipeline.engine import PipelineEngine
 from .pipeline.scan import IMAGE_EXTENSIONS
-from .schemas import CurationFinalize, JobManifest, JobSummary, PipelineEvent
+from .schemas import (
+    CurationFinalize,
+    JobManifest,
+    JobSummary,
+    PipelineEvent,
+    PipelineOptions,
+)
 
 
 def utc_now():
@@ -60,6 +66,9 @@ class JobState:
         workflow: str = "filtering",
         similarity_model: str = "dinov3",
         minimum_pixels: int | None = None,
+        complete_linkage_similarity: float | None = None,
+        graph_similarity: float | None = None,
+        pipeline_options: PipelineOptions | None = None,
     ):
         self.job_id = job_id
         self.source_dir = source_dir
@@ -67,6 +76,13 @@ class JobState:
         self.workflow = workflow
         self.similarity_model = similarity_model
         self.minimum_pixels = minimum_pixels
+        self.complete_linkage_similarity = complete_linkage_similarity
+        self.graph_similarity = graph_similarity
+        self.pipeline_options = (
+            pipeline_options.model_dump()
+            if pipeline_options is not None
+            else PipelineOptions().model_dump()
+        )
         self.status = "queued"
         self.current_stage: str | None = None
         self.progress = 0.0
@@ -89,6 +105,9 @@ class JobState:
                 workflow=self.workflow,
                 similarity_model=self.similarity_model,
                 minimum_pixels=self.minimum_pixels,
+                complete_linkage_similarity=self.complete_linkage_similarity,
+                graph_similarity=self.graph_similarity,
+                pipeline_options=dict(self.pipeline_options),
                 source_dir=self.source_dir,
                 output_dir=self.output_dir,
                 current_stage=self.current_stage,
@@ -114,6 +133,9 @@ class JobManager:
         seed: int | None,
         similarity_model: str = "dinov3",
         minimum_pixels: int | None = None,
+        complete_linkage_similarity: float | None = None,
+        graph_similarity: float | None = None,
+        pipeline_options: PipelineOptions | None = None,
     ) -> JobState:
         job_id = uuid.uuid4().hex[:12]
         resolved_minimum_pixels = (
@@ -121,12 +143,25 @@ class JobManager:
             if minimum_pixels is not None
             else self.settings.min_megapixels
         )
+        resolved_complete_linkage_similarity = (
+            complete_linkage_similarity
+            if complete_linkage_similarity is not None
+            else self.settings.complete_linkage_similarity
+        )
+        resolved_graph_similarity = (
+            graph_similarity
+            if graph_similarity is not None
+            else self.settings.graph_similarity
+        )
         state = JobState(
             job_id,
             source_dir,
             output_dir,
             similarity_model=similarity_model,
             minimum_pixels=resolved_minimum_pixels,
+            complete_linkage_similarity=resolved_complete_linkage_similarity,
+            graph_similarity=resolved_graph_similarity,
+            pipeline_options=pipeline_options,
         )
         with self.lock:
             self.jobs[job_id] = state
@@ -227,6 +262,9 @@ class JobManager:
                 lambda *args: self._event(state, *args),
                 similarity_model=state.similarity_model,
                 minimum_pixels=state.minimum_pixels,
+                complete_linkage_similarity=state.complete_linkage_similarity,
+                graph_similarity=state.graph_similarity,
+                pipeline_options=PipelineOptions.model_validate(state.pipeline_options),
             )
             result = engine.run(
                 state.job_id,
@@ -782,6 +820,20 @@ class JobManager:
             raise PermissionError("curation image is outside the task input directory")
         if not image_path.is_file():
             raise FileNotFoundError("curation image file is missing")
+        return image_path
+
+    def review_image_path(self, state: JobState, item_index: int) -> Path:
+        with state.lock:
+            item = dict(self._review_item(state, item_index))
+            output_root = self._output_root(state)
+        source = item.get("output")
+        if item.get("status") != "passed" or not source:
+            raise FileNotFoundError("review image not found")
+        image_path = Path(str(source)).resolve()
+        if not image_path.is_relative_to(output_root):
+            raise PermissionError("review image is outside the task output directory")
+        if not image_path.is_file():
+            raise FileNotFoundError("review image file is missing")
         return image_path
 
     @staticmethod

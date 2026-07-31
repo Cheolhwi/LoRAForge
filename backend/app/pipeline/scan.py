@@ -18,7 +18,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def scan_images(source_dir: Path, minimum_pixels: int) -> tuple[list[ImageRecord], dict[str, int]]:
+def scan_images(
+    source_dir: Path,
+    minimum_pixels: int,
+    *,
+    deduplicate: bool = True,
+    resolution_filter: bool = True,
+) -> tuple[list[ImageRecord], dict[str, int | bool]]:
     if not source_dir.exists() or not source_dir.is_dir():
         raise ValueError(f"source_dir is not a directory: {source_dir}")
     records: list[ImageRecord] = []
@@ -29,13 +35,15 @@ def scan_images(source_dir: Path, minimum_pixels: int) -> tuple[list[ImageRecord
         "invalid_images": 0,
         "resolution_rejected": 0,
         "minimum_pixels": minimum_pixels,
+        "deduplicate_enabled": deduplicate,
+        "resolution_filter_enabled": resolution_filter,
     }
     for path in sorted(source_dir.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
         stats["files_found"] += 1
         file_hash = sha256_file(path)
-        if file_hash in seen_hashes:
+        if deduplicate and file_hash in seen_hashes:
             stats["duplicates"] += 1
             continue
         try:
@@ -46,11 +54,19 @@ def scan_images(source_dir: Path, minimum_pixels: int) -> tuple[list[ImageRecord
             continue
         seen_hashes[file_hash] = path
         pixels = width * height
-        record = ImageRecord(path, file_hash, width, height, pixels, resolution_ok=pixels >= minimum_pixels)
+        resolution_ok = not resolution_filter or pixels >= minimum_pixels
+        record = ImageRecord(
+            path,
+            file_hash,
+            width,
+            height,
+            pixels,
+            resolution_ok=resolution_ok,
+        )
         if not record.resolution_ok:
             stats["resolution_rejected"] += 1
             continue
         records.append(record)
-    stats["unique_images"] = len(seen_hashes)
+    stats["unique_images"] = len(records) + stats["resolution_rejected"]
     stats["embedding_candidates"] = len(records)
     return records, stats

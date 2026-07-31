@@ -1,12 +1,21 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="canvas-booting">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LoRAForge · 数据集筛选编排器</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./canvas.css" />
   </head>
   <body>
+    <div id="canvas-boot-screen" class="canvas-boot-screen" aria-hidden="true">
+      <img src="./loraforge-logo.png" alt="" />
+      <div>
+        <strong>LoRAForge</strong>
+        <span>正在准备无限画布</span>
+      </div>
+      <i></i>
+    </div>
     <div class="app-shell">
       <header class="topbar">
         <div>
@@ -62,6 +71,34 @@
                 <option value="921600">兼容 720p · ≥ 1280×720</option>
               </select>
             </label>
+            <label class="small-field complete-linkage-field">
+              <span>聚簇相似度</span>
+              <input
+                id="complete-linkage-similarity"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value="0.90"
+                inputmode="decimal"
+                required
+              />
+              <small>Complete-linkage 簇内最低相似度</small>
+            </label>
+            <label class="small-field graph-similarity-field">
+              <span>图筛选相似度</span>
+              <input
+                id="graph-similarity"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value="0.65"
+                inputmode="decimal"
+                required
+              />
+              <small>建立 Mutual Top-20 边的最低相似度</small>
+            </label>
             <button id="start-button" type="submit">启动流水线 <span>→</span></button>
           </form>
           <form id="standalone-pixai-form" class="standalone-pixai">
@@ -84,7 +121,7 @@
             <button id="standalone-pixai-button" type="submit" disabled>直接运行 PixAI <span>→</span></button>
           </form>
           <div class="rule-strip">
-            <span id="rule-min-resolution">≥ 1MP</span><i>→</i><span id="rule-embedding-model">DINOv3 1024d</span><i>→</i><span id="rule-cluster-threshold">0.90 cluster</span><i>→</i><span>Mutual Top-20</span><i>→</i><span>3-core</span><i>→</i><span>Locate Anything</span>
+            <span id="rule-min-resolution">≥ 1MP</span><i>→</i><span id="rule-embedding-model">DINOv3 1024d</span><i>→</i><span id="rule-cluster-threshold">0.90 cluster</span><i>→</i><span id="rule-graph-threshold">0.65 Mutual Top-20</span><i>→</i><span>3-core</span><i>→</i><span>Locate Anything</span>
           </div>
         </section>
 
@@ -138,7 +175,7 @@
           <div class="audit-toolbar">
             <div class="audit-tabs" role="tablist" aria-label="筛选阶段">
               <button id="audit-clustering-tab" class="audit-tab active" type="button" data-audit-view="clustering">0.90 聚簇</button>
-              <button class="audit-tab" type="button" data-audit-view="graph">0.65 图筛选</button>
+              <button id="audit-graph-tab" class="audit-tab" type="button" data-audit-view="graph">0.65 图筛选</button>
             </div>
             <div id="audit-filters" class="audit-filters" aria-label="簇状态筛选">
               <button class="active" type="button" data-audit-filter="all">全部</button>
@@ -309,6 +346,18 @@
               <button id="curation-submit" type="submit">Submit → PixAI</button>
             </form>
           </div>
+          <div id="review-pagination" class="review-pagination" hidden>
+            <span id="review-page-range">1–1 / 1</span>
+            <div>
+              <button id="review-page-previous" type="button" aria-label="上一页">‹</button>
+              <label>
+                <span>PAGE</span>
+                <input id="review-page-input" type="number" min="1" value="1" aria-label="Review 页码" />
+                <small>/ <strong id="review-page-total">1</strong></small>
+              </label>
+              <button id="review-page-next" type="button" aria-label="下一页">›</button>
+            </div>
+          </div>
           <div id="review-gallery" class="review-gallery"></div>
         </section>
 
@@ -458,7 +507,41 @@
       <button id="review-next" class="review-nav review-next" type="button" aria-label="下一张图片">›</button>
     </div>
 
+    <div
+      id="review-remove-dialog"
+      class="review-remove-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="review-remove-dialog-title"
+      hidden
+    >
+      <section class="review-remove-dialog-card">
+        <div class="review-remove-dialog-icon" aria-hidden="true">
+          <span>✓</span>
+          <i>−</i>
+        </div>
+        <div class="review-remove-dialog-copy">
+          <small>REVIEW / QUICK REMOVE</small>
+          <h2 id="review-remove-dialog-title">移出这张图片？</h2>
+          <strong id="review-remove-dialog-filename">—</strong>
+          <p>图片会移入可恢复区，可以立即撤销。</p>
+          <p class="review-remove-dialog-once">此提示只出现一次；以后点击对勾将直接移出。</p>
+        </div>
+        <footer>
+          <button id="review-remove-dialog-cancel" type="button">暂不移出</button>
+          <button id="review-remove-dialog-confirm" type="button">移出图片</button>
+        </footer>
+      </section>
+    </div>
+
     <script src="./i18n.js"></script>
     <script src="./app.js" type="module"></script>
+    <script src="./canvas.js" type="module"></script>
+    <script>
+      window.__loraforgeCanvasBootFallback = window.setTimeout(() => {
+        document.documentElement.classList.remove("canvas-booting");
+        document.getElementById("canvas-boot-screen")?.remove();
+      }, 6000);
+    </script>
   </body>
 </html>

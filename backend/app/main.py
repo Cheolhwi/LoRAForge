@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+from functools import lru_cache
 from io import BytesIO
-from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -33,14 +33,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@lru_cache(maxsize=128)
+def _review_thumbnail_bytes(path: str, modified_ns: int, file_size: int) -> bytes:
+    del modified_ns, file_size
+    with Image.open(path) as image:
+        thumbnail = ImageOps.exif_transpose(image).convert("RGB")
+        width, height = thumbnail.size
+        if width > height:
+            preview_size = (1280, 720)
+        elif height > width:
+            preview_size = (720, 1280)
+        else:
+            preview_size = (960, 960)
+        thumbnail.thumbnail(preview_size, Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        thumbnail.save(
+            buffer,
+            format="JPEG",
+            quality=82,
+            subsampling="4:2:0",
+            progressive=True,
+        )
+    return buffer.getvalue()
+
 
 @app.get("/api/health")
 def health():
     return {
         "status": "ok",
         "runtime": "local_models",
+        "review_thumbnail": True,
         "minimum_pixels": settings.min_megapixels,
         "complete_linkage_similarity": settings.complete_linkage_similarity,
+        "graph_similarity": settings.graph_similarity,
         "pixai_model_id": settings.pixai_model_id,
         "pixai_caption_threshold": settings.pixai_caption_threshold,
         "pixai_caption_max_tags": settings.pixai_caption_max_tags,
@@ -65,11 +90,14 @@ def choose_folder(
 @app.post("/api/jobs", response_model=JobSummary, status_code=202)
 def create_job(request: JobCreate):
     state = manager.create(
-        request.source_dir,
-        request.output_dir,
-        request.seed,
-        request.similarity_model,
-        request.minimum_pixels,
+        source_dir=request.source_dir,
+        output_dir=request.output_dir,
+        seed=request.seed,
+        similarity_model=request.similarity_model,
+        minimum_pixels=request.minimum_pixels,
+        complete_linkage_similarity=request.complete_linkage_similarity,
+        graph_similarity=request.graph_similarity,
+        pipeline_options=request.pipeline_options,
     )
     return state.summary()
 
@@ -185,24 +213,32 @@ def audit_thumbnail(job_id: str, image_id: str):
 
 @app.get("/api/jobs/{job_id}/review/{item_index}")
 def review_image(job_id: str, item_index: int):
-    state = get_state(job_id)
-    with state.lock:
-        if item_index < 0 or item_index >= len(state.manifest):
-            raise HTTPException(status_code=404, detail="review image not found")
-        item = dict(state.manifest[item_index])
-        output_dir = state.output_dir
-
-    if item.get("status") != "passed" or not item.get("output") or not output_dir:
-        raise HTTPException(status_code=404, detail="review image not found")
-
-    output_root = Path(output_dir).resolve()
-    image_path = Path(item["output"]).resolve()
-    if not image_path.is_relative_to(output_root):
-        raise HTTPException(status_code=403, detail="review image is outside the task output directory")
-    if not image_path.is_file():
-        raise HTTPException(status_code=404, detail="review image file is missing")
-
+    try:
+        image_path = manager.review_image_path(get_state(job_id), item_index)
+    except (IndexError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return FileResponse(image_path, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.get("/api/jobs/{job_id}/review/{item_index}/thumbnail")
+def review_thumbnail(job_id: str, item_index: int):
+    try:
+        image_path = manager.review_image_path(get_state(job_id), item_index)
+        stat = image_path.stat()
+        content = _review_thumbnail_bytes(str(image_path), stat.st_mtime_ns, stat.st_size)
+    except (IndexError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"could not create review thumbnail: {exc}") from exc
+    return Response(
+        content=content,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @app.delete("/api/jobs/{job_id}/review/{item_index}")
