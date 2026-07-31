@@ -21,46 +21,29 @@ LoRAForge 是一个在本机运行的图片数据集整理工具，用来把杂�
 ## 完整流程
 
 ```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 12, "rankSpacing": 18, "curve": "linear", "padding": 6}, "themeVariables": {"fontSize": "11px"}}}%%
 flowchart TD
-    A["选择图片目录和输出目录"] --> B{"选择运行入口"}
+    A["选择图片目录<br/>可选输出目录"] --> B{"运行入口"}
 
-    B -->|"完整筛选"| C["递归扫描支持的图片"]
-    C --> D["SHA-256 去重"]
-    D --> E["分辨率过滤"]
-    E --> F{"视觉相似度模型"}
-    F -->|"默认"| G["DINOv3 生成 1024 维 Embedding"]
-    F -->|"可选"| H["PixAI 生成 1024 维 Visual Embedding"]
-    G --> I["Complete-linkage 聚类"]
-    H --> I
-    I --> J["为每个簇选择 Medoid 和备用候选"]
-    J --> K["建立 Mutual Top-20 相似图"]
-    K --> L["迭代 3-core"]
-    L --> M["保留最大连通分量"]
-    M --> N["逐簇检查 Medoid"]
-    N --> O{"检测到水印或签名？"}
-    O -->|"是"| Q{"还有备用候选且尚未重试？"}
-    O -->|"否"| P{"检测到漫画分镜或拼图？"}
-    P -->|"是"| Q
-    P -->|"否"| R["记录通过图片"]
-    Q -->|"是"| S["随机选择一个备用候选"]
-    S --> O
-    Q -->|"否"| T["丢弃该簇"]
-    R --> U["汇总结果、复制通过图片并写入 manifest.json"]
-    T --> U
-    U --> V["Review：浏览、移除或恢复图片"]
-    V --> W["设置 LoRA Prefix 并提交"]
+    B -->|"完整筛选"| C["扫描 → SHA-256 去重<br/>→ 分辨率过滤"]
+    C --> D["1024 维 Visual Embedding<br/>DINOv3 默认 / PixAI 可选"]
+    D --> E["Complete-linkage 聚簇<br/>Medoid + 备用候选"]
+    E --> F["Mutual Top-20 → 3-core<br/>保留最大连通分量"]
+    F --> G["Locate 检查<br/>水印 → 漫画 / 拼图"]
+    G --> H{"候选通过？"}
+    H -->|"通过"| I["汇总筛选结果<br/>复制通过图片 + manifest.json"]
+    H -->|"首次失败"| J["选择备用候选<br/>仅重试一次"]
+    J --> G
+    H -->|"仍失败 / 无备用"| K["丢弃该簇"]
+    K --> I
+    I --> L["Review：浏览 / 移除 / 恢复<br/>设置 LoRA Prefix"]
 
-    B -->|"直接 PixAI"| X["递归读取全部支持的图片"]
-    X --> Y["跳过去重、分辨率、聚类、图筛选和 Locate"]
-    Y --> W
-
-    W --> Z["PixAI Tagger 生成 General Tags"]
-    Z --> AA["派生人数、取景和室内外信息"]
-    AA --> AB["设置目标图片数和目标分布"]
-    AB --> AC["贪心选择最接近目标分布的图片"]
-    AC --> AD["标签阈值过滤、冲突清理和父标签精简"]
-    AD --> AE["注入 LoRA Prefix"]
-    AE --> AF["输出训练图片、Caption 和审计报告"]
+    B -->|"直接 PixAI"| M["读取全部支持图片<br/>跳过视觉筛选"]
+    M --> N["PixAI Tagger<br/>General Tags + 派生特征"]
+    L --> N
+    N --> O["设置目标数量与分布<br/>贪心选样"]
+    O --> P["阈值过滤 + 冲突清理<br/>父标签精简 + Prefix"]
+    P --> Q["输出训练图片、Caption<br/>与审计报告"]
 ```
 
 ## Pipeline 如何工作

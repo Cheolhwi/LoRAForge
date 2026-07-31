@@ -22,46 +22,29 @@ It automatically handles image deduplication, resolution filtering, visual clust
 ## Complete workflow
 
 ```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 12, "rankSpacing": 18, "curve": "linear", "padding": 6}, "themeVariables": {"fontSize": "11px"}}}%%
 flowchart TD
-    A["Select an image folder and output folder"] --> B{"Choose an entry point"}
+    A["Select image folder<br/>and optional output folder"] --> B{"Entry point"}
 
-    B -->|"Full filtering pipeline"| C["Recursively scan supported images"]
-    C --> D["SHA-256 deduplication"]
-    D --> E["Resolution filtering"]
-    E --> F{"Visual similarity model"}
-    F -->|"Default"| G["DINOv3 creates 1024-dimensional embeddings"]
-    F -->|"Optional"| H["PixAI creates 1024-dimensional visual embeddings"]
-    G --> I["Complete-linkage clustering"]
-    H --> I
-    I --> J["Choose a medoid and backup candidates for each cluster"]
-    J --> K["Build a Mutual Top-20 similarity graph"]
-    K --> L["Iterative 3-core filtering"]
-    L --> M["Keep the largest connected component"]
-    M --> N["Inspect each cluster medoid"]
-    N --> O{"Watermark or signature detected?"}
-    O -->|"Yes"| Q{"Backup available and no retry used?"}
-    O -->|"No"| P{"Comic panels or collage detected?"}
-    P -->|"Yes"| Q
-    P -->|"No"| R["Record the passed image"]
-    Q -->|"Yes"| S["Randomly choose one backup candidate"]
-    S --> O
-    Q -->|"No"| T["Drop the cluster"]
-    R --> U["Collect results, copy passed images, and write manifest.json"]
-    T --> U
-    U --> V["Review: inspect, remove, or restore images"]
-    V --> W["Set the LoRA prefix and submit"]
+    B -->|"Full filtering"| C["Scan → SHA-256 deduplication<br/>→ resolution filtering"]
+    C --> D["1024d visual embeddings<br/>DINOv3 default / PixAI optional"]
+    D --> E["Complete-linkage clustering<br/>Medoid + backup candidates"]
+    E --> F["Mutual Top-20 → 3-core<br/>Keep largest component"]
+    F --> G["Locate inspection<br/>Watermark → comic / collage"]
+    G --> H{"Candidate passes?"}
+    H -->|"Yes"| I["Collect filtering results<br/>Copy passed images + manifest.json"]
+    H -->|"First failure"| J["Choose backup candidate<br/>Retry once"]
+    J --> G
+    H -->|"Fails again / no backup"| K["Drop cluster"]
+    K --> I
+    I --> L["Review: inspect / remove / restore<br/>Set LoRA prefix"]
 
-    B -->|"Direct PixAI"| X["Recursively load all supported images"]
-    X --> Y["Skip deduplication, resolution, clustering, graph filtering, and Locate"]
-    Y --> W
-
-    W --> Z["PixAI Tagger generates general tags"]
-    Z --> AA["Derive subject count, framing, and indoor/outdoor features"]
-    AA --> AB["Set the target image count and target distributions"]
-    AB --> AC["Greedily select images that best fill distribution gaps"]
-    AC --> AD["Apply tag thresholds, resolve conflicts, and remove redundant parent tags"]
-    AD --> AE["Inject the LoRA prefix"]
-    AE --> AF["Write training images, captions, and audit reports"]
+    B -->|"Direct PixAI"| M["Load all supported images<br/>Skip visual filtering"]
+    M --> N["PixAI Tagger<br/>General tags + derived features"]
+    L --> N
+    N --> O["Set target size and distributions<br/>Greedy sampling"]
+    O --> P["Threshold + conflict cleanup<br/>Parent-tag reduction + prefix"]
+    P --> Q["Write training images, captions<br/>and audit reports"]
 ```
 
 ## How the pipeline works
